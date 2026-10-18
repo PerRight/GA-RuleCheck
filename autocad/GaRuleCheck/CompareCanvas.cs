@@ -77,7 +77,7 @@ namespace GaRuleCheck
             using (var bg = new SolidBrush(st.Back)) g.FillRectangle(bg, area);
             var clip = g.Clip;
             g.SetClip(area);
-            var changed = d.Changes.Where(c => c.ElementId != null).GroupBy(c => c.ElementId!).ToDictionary(x => x.Key, x => x.First());
+            var changed = d.Changes.SelectMany(c => c.Handles.Select(h => (h, c))).GroupBy(x => x.h).ToDictionary(x => x.Key, x => x.First().c);
             var a = d.Geometry.A.ToDictionary(x => x.Handle);
             var b = d.Geometry.B.ToDictionary(x => x.Handle);
 
@@ -109,15 +109,18 @@ namespace GaRuleCheck
                 {
                     foreach (var gm in d.Geometry.B)
                         if (!changed.ContainsKey(gm.Handle)) DrawBase(g, area, v, st, gm, st.Faint);
-                    foreach (var c in d.Changes.Where(x => x.ElementId != null))
+                    foreach (var c in d.Changes)
                     {
                         bool hl = c.Number == highlight;
-                        if (c.Kind == "added" && b.TryGetValue(c.ElementId!, out var gb)) DrawChanged(g, area, v, st, gb, "added", "after", hl);
-                        else if (c.Kind == "removed" && a.TryGetValue(c.ElementId!, out var ga)) DrawChanged(g, area, v, st, ga, "removed", "before", hl);
-                        else if (c.Kind == "modified")
+                        foreach (var h in c.Handles)   // 묶인 블록이면 하위 객체 전부
                         {
-                            if (a.TryGetValue(c.ElementId!, out var g0)) DrawChanged(g, area, v, st, g0, "modified", "before", hl);
-                            if (b.TryGetValue(c.ElementId!, out var g1)) DrawChanged(g, area, v, st, g1, "modified", "after", hl);
+                            if (c.Kind == "added" && b.TryGetValue(h, out var gb)) DrawChanged(g, area, v, st, gb, "added", "after", hl);
+                            else if (c.Kind == "removed" && a.TryGetValue(h, out var ga)) DrawChanged(g, area, v, st, ga, "removed", "before", hl);
+                            else if (c.Kind == "modified")
+                            {
+                                if (a.TryGetValue(h, out var g0)) DrawChanged(g, area, v, st, g0, "modified", "before", hl);
+                                if (b.TryGetValue(h, out var g1)) DrawChanged(g, area, v, st, g1, "modified", "after", hl);
+                            }
                         }
                     }
                     break;
@@ -289,7 +292,7 @@ namespace GaRuleCheck
             _hover = null;
             _tip.SetToolTip(this, "");
             if (data == null) { _byHandle = new(); _index = null; Invalidate(); return; }
-            _byHandle = data.Changes.Where(c => c.ElementId != null).GroupBy(c => c.ElementId!).ToDictionary(g => g.Key, g => g.First());
+            _byHandle = data.Changes.SelectMany(c => c.Handles.Select(h => (h, c))).GroupBy(x => x.h).ToDictionary(g => g.Key, g => g.First().c);
             var shapes = data.Geometry.A.Concat(data.Geometry.B)
                 .Where(gm => _byHandle.ContainsKey(gm.Handle))
                 .Select(gm => (gm.Handle, (IReadOnlyList<double[]>)gm.Points, gm.Closed));

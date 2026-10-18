@@ -581,7 +581,7 @@ namespace GaRuleCheck
             {
                 var ids = new List<ObjectId>();
                 Extents3d? ext = null;
-                foreach (var h in handles)
+                foreach (var h in handles.Select(Extractor.BaseHandle).Distinct())   // 펼친 블록 하위 객체 → 블록
                 {
                     var id = Extractor.HandleToId(db, h);
                     if (id.IsNull || id.IsErased) continue;

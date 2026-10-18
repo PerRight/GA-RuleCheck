@@ -10,6 +10,7 @@
 //   label          : 글자 (height[m])
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -68,7 +69,8 @@ namespace GaRuleCheck
                 if (r.Status is "fail" or "review")
                 {
                     short color = r.Status == "fail" ? Red : Orange;
-                    foreach (var h in r.Targets)
+                    // 펼친 블록의 하위 객체 handle('1F3.12')은 원래 블록 하나로 — 같은 블록을 수백 번 복제하지 않게
+                    foreach (var h in r.Targets.Select(Extractor.BaseHandle).Distinct())
                     {
                         var id = Extractor.HandleToId(db, h);
                         if (id.IsNull || id.IsErased) continue;
@@ -158,7 +160,7 @@ namespace GaRuleCheck
             using (doc.LockDocument())
             using (var tr = db.TransactionManager.StartOpenCloseTransaction())
             {
-                foreach (var h in handles)
+                foreach (var h in handles.Select(Extractor.BaseHandle).Distinct())
                 {
                     var id = Extractor.HandleToId(db, h);
                     if (id.IsNull || id.IsErased) continue;
@@ -353,12 +355,15 @@ namespace GaRuleCheck
             {
                 if (c.ElementId == null) continue;
                 AcColor col = c.Kind switch { "added" => green, "removed" => red, _ => yellow };
-                if (c.Kind == "added" && b.TryGetValue(c.ElementId, out var gb)) Path(gb, col, 3, 0);
-                else if (c.Kind == "removed" && a.TryGetValue(c.ElementId, out var ga)) Path(ga, col, 3, 10);
-                else if (c.Kind == "modified")
+                foreach (var h in c.Handles)   // 묶인 블록이면 하위 객체 전부
                 {
-                    if (a.TryGetValue(c.ElementId, out var g0)) Path(g0, col, 1.5, 3);
-                    if (b.TryGetValue(c.ElementId, out var g1)) Path(g1, col, 3, 0);
+                    if (c.Kind == "added" && b.TryGetValue(h, out var gb)) Path(gb, col, 3, 0);
+                    else if (c.Kind == "removed" && a.TryGetValue(h, out var ga)) Path(ga, col, 3, 10);
+                    else if (c.Kind == "modified")
+                    {
+                        if (a.TryGetValue(h, out var g0)) Path(g0, col, 1.5, 3);
+                        if (b.TryGetValue(h, out var g1)) Path(g1, col, 3, 0);
+                    }
                 }
                 if (c.Center == null || c.Bbox == null) continue;
                 // 번호 표식: 추가 ○, 삭제 □, 변경 ◇ (색 + 모양)
@@ -417,7 +422,7 @@ namespace GaRuleCheck
             using (doc.LockDocument())
             using (var tr = db.TransactionManager.StartOpenCloseTransaction())
             {
-                foreach (var h in r.Targets)
+                foreach (var h in r.Targets.Select(Extractor.BaseHandle).Distinct())
                 {
                     var id = Extractor.HandleToId(db, h);
                     if (id.IsNull || id.IsErased) continue;

@@ -22,6 +22,8 @@ namespace GaRuleCheck
         public event Action<ElementCheckDto>? ElementClicked;
         private readonly RuleResultDto _r;
         private bool _hover;
+        private const int MaxRows = 40;   // 점검 항목 줄 수 상한(실도면은 객체가 수천 개)
+        private Label? _more;
         private readonly Label _details;
         private bool _expanded;
 
@@ -72,12 +74,35 @@ namespace GaRuleCheck
                 flow.Controls.Add(s);
             }
 
-            // 점검 항목(체크리스트): 미충족 → 확인 필요 → 충족 순
-            var rows = r.Elements.Where(e => !failOnly || e.Status == "fail")
+            // 점검 항목(체크리스트): 미충족 → 확인 필요 → 충족 순.
+            // 실도면은 블록을 펼친 하위 객체가 수천 개 → 블록 하나를 한 줄로(대표 = 가장 나쁜 하위 객체), 최대 MaxRows줄.
+            var all = r.Elements.Where(e => !failOnly || e.Status == "fail").ToList();
+            var rows = all.GroupBy(e => Extractor.BaseHandle(e.ElementId))
+                .Select(g =>
+                {
+                    var worst = g.OrderBy(e => Theme.StatusRank(e.Status)).ThenBy(e => e.Margin ?? double.MaxValue).First();
+                    if (g.Count() == 1) return worst;
+                    int bad = g.Count(e => e.Status == "fail");
+                    return new ElementCheckDto
+                    {
+                        ElementId = worst.ElementId, RuleId = worst.RuleId, RuleName = worst.RuleName, Role = worst.Role,
+                        RoleKo = $"{worst.RoleKo} 블록 {g.Key} (하위 {g.Count()}개{(bad > 0 ? $", 미충족 {bad}" : "")})",
+                        Status = worst.Status, Required = worst.Required, Actual = worst.Actual, Diff = worst.Diff,
+                        Guide = worst.Guide, Margin = worst.Margin,
+                    };
+                })
                 .OrderBy(e => Theme.StatusRank(e.Status)).ThenBy(e => e.RoleKo).ThenBy(e => e.ElementId).ToList();
             if (rows.Count > 0)
             {
                 flow.Controls.Add(Theme.Label(failOnly ? "미충족 객체" : "점검 항목 (객체별)", Theme.Small, Theme.Muted));
+                if (rows.Count > MaxRows)
+                {
+                    var rest = rows.Skip(MaxRows).ToList();
+                    rows = rows.Take(MaxRows).ToList();
+                    int f = rest.Count(e => e.Status == "fail"), u = rest.Count(e => e.Status == "unknown"), p = rest.Count - f - u;
+                    _more = Theme.Label($"… 외 {rest.Count}줄 (미충족 {f} · 확인 필요 {u} · 충족 {p}) — 도면에서 객체에 커서를 올리면 판정이 보입니다",
+                                        Theme.Small, f + u > 0 ? Theme.Warn : Theme.Muted);
+                }
                 foreach (var e in rows)
                 {
                     var row = new ElementRow(e);
@@ -90,6 +115,7 @@ namespace GaRuleCheck
                     row.Clicked += () => ElementClicked?.Invoke(e);
                     flow.Controls.Add(row);
                 }
+                if (_more != null) flow.Controls.Add(_more);
             }
 
             // 버튼 줄

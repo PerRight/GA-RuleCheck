@@ -282,6 +282,10 @@ namespace GaRuleCheck
         public int Number { get; set; }
         public string Kind { get; set; } = "";
         public string? ElementId { get; set; }
+        /// 펼친 블록을 한 항목으로 묶은 변경이면 하위 객체 handle 목록(엔진 0.4+). 아니면 null
+        public List<string>? Members { get; set; }
+        /// 그림에서 이 변경에 해당하는 형상 handle들(묶인 블록이면 하위 객체 전부)
+        public IEnumerable<string> Handles => Members is { Count: > 0 } m ? m : ElementId != null ? new[] { ElementId } : Array.Empty<string>();
         public string? Role { get; set; }
         public string RoleKo { get; set; } = "";
         public string DescKo { get; set; } = "";
