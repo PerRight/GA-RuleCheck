@@ -17,6 +17,7 @@ from typing import Any
 
 from .contract import validate_model
 from .engine import Report, Rule, all_rules
+from .readiness import readiness
 
 
 def diff_models(prev: dict[str, Any] | None, curr: dict[str, Any]) -> dict[str, Any]:
@@ -110,6 +111,7 @@ class Session:
                 "cached_rules": cached,          # 캐시 재사용 규칙
                 "transitions": transitions,      # 상태 변화 (new_violation / resolved / ...)
                 "units_scale": model.get("units_scale"),
+                "readiness": readiness(model),   # 판정에 필요한 입력의 준비 상태(실도면 연결)
             })
             return out
 
