@@ -467,11 +467,15 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
         etype = str(ent.get("type", "")).upper()
         if source == "layer_map" and etype in ANNOTATION_TYPES:
             continue  # 레이어째 지정한 경우 그 레이어의 문자·치수는 형상이 아니므로 뺀다
-        if source == "layer_map" and region is not None and (etype not in SUPPORTED_TYPES or etype == "INSERT"):
-            # 영역 밖(평면도 등)의 지원 안 되는 객체·못 펼친 블록 때문에 멈추지 않게 — 영역 판정을 먼저(좌표가 없으면 안쪽으로 봄)
+        if source == "layer_map" and region is not None and etype not in SUPPORTED_TYPES:
+            # 영역 밖(평면도 등)의 지원 안 되는 객체 때문에 멈추지 않게 — 영역 판정을 먼저.
+            # 좌표가 없거나 수가 아니면(NaN·inf 포함) 안쪽으로 보고 멈춘다.
+            # 못 펼친 블록(INSERT)은 여기서 거르지 않는다: 삽입점만 전달되므로 삽입점이 영역 밖이어도 형상은 영역 안일 수 있다.
             try:
                 raw_pts = [[float(p[0]), float(p[1])] for p in (ent.get("points") or [])]
             except (TypeError, ValueError, IndexError):
+                raw_pts = []
+            if not all(math.isfinite(v) for p in raw_pts for v in p):
                 raw_pts = []
             if raw_pts and not _in_region(raw_pts, region):
                 layer_role_counts[layer]["out"] += 1
@@ -483,9 +487,12 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
             continue
         if etype == "INSERT" and role != "eye":
             # 블록은 삽입점 1개만 전달된다 → 장애물·선체·격벽 형상을 잃고 '기준 충족'으로 보일 수 있으므로 멈춘다.
+            hint = (" 레이어 단위로 역할을 지정한 경우 측면도 영역 밖에 있어도 멈춥니다(삽입점만으로는 형상 위치를 알 수 없음) — "
+                    "그 블록만 분해하거나, 레이어 지정 대신 필요한 객체만 골라 역할을 지정하세요(GARCROLE — 측면도 밖 블록은 고르지 않으면 됨)."
+                    if source == "layer_map" else "")
             _add_issue(issues, _issue("ENTITY_UNSUPPORTED",
                                       f"{layer} 레이어의 블록(INSERT, handle {ent.get('handle')})은 삽입점만 읽혀 형상을 판정할 수 없습니다. "
-                                      "블록을 분해(EXPLODE)하거나 폴리선으로 다시 그리세요. 블록은 GA_EYE(조종위치 점)에만 쓸 수 있습니다.",
+                                      "블록을 분해(EXPLODE)하거나 폴리선으로 다시 그리세요. 블록은 GA_EYE(조종위치 점)에만 쓸 수 있습니다." + hint,
                                       [role]))
             continue
         try:

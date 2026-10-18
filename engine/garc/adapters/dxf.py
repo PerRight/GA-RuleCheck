@@ -148,10 +148,21 @@ def _insert_fallback(insert, handle: str) -> dict[str, Any]:
     return ent
 
 
+# 블록 안에 있으면 형상을 알 수 없는 객체(프록시·OLE) — 그래픽이 없으면 ezdxf가 알리지 않고 건너뛴다
+_OPAQUE = {"ACAD_PROXY_ENTITY", "OLE2FRAME", "OLEFRAME"}
+
+
 def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> list[dict[str, Any]]:
     """블록을 펼쳐 형상 하위 객체를 낸다(중첩 블록 포함). 하위 객체 handle = '<블록 handle>.<번호>'.
     형상이 하나도 없거나·펼칠 수 없거나·배열 블록(MINSERT)이면 삽입점만 → 엔진 '검토 불가'."""
     if insert.dxf.get("column_count", 1) > 1 or insert.dxf.get("row_count", 1) > 1 or depth > 16:
+        return [_insert_fallback(insert, parent_handle)]
+    try:
+        block = insert.block()
+        # 그래픽 없는 프록시 등은 ezdxf가 콜백도 없이 빠뜨린다 → 블록 정의에 있으면 펼치지 않고 전체를 멈춤
+        if block is None or any(e.dxftype() in _OPAQUE for e in block):
+            return [_insert_fallback(insert, parent_handle)]
+    except Exception:
         return [_insert_fallback(insert, parent_handle)]
     skipped: list[str] = []
     try:

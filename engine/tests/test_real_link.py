@@ -333,6 +333,11 @@ class NoSilentGeometryLoss(unittest.TestCase):
             hatch.paths.add_polyline_path([(0, 0), (12, 0), (12, 10.5), (0, 10.5)], is_closed=True)
         elif fill == "text":
             blk.add_text("CONTAINER", dxfattribs={"height": 1})
+        elif fill == "proxy":
+            # 그래픽 없는 프록시는 ezdxf가 콜백 없이 건너뛴다 — 선 하나가 함께 있으면 '펼쳐진' 것처럼 보였다
+            import ezdxf.entities.factory as factory
+            blk.add_line((0, 0), (1, 0))
+            blk.add_entity(factory.create_db_entry("ACAD_PROXY_ENTITY", {"layer": "0"}, doc))
         if fill == "arc360":
             obst = msp.add_arc((106 + ox, 18 + oz), 6.0, 0, 360)          # 꼭대기 z=24
         elif fill == "circle":
@@ -385,6 +390,12 @@ class NoSilentGeometryLoss(unittest.TestCase):
         raw, rep = self.run_block("minsert")
         self.assertEqual(status(rep)[VIS], "review")
 
+    def test_proxy_without_graphics_in_block_stops(self):
+        """검증(Sonnet) 3차: 그래픽 없는 프록시 + 선 하나인 블록이 '통과'로 샜다."""
+        raw, rep = self.run_block("proxy")
+        self.assertEqual(status(rep)[VIS], "review")
+        self.assertIn("INSERT", [e["type"] for e in raw["entities"]])
+
     def test_degenerate_arc_in_raw_stops(self):
         bad = {"handle": "A1", "layer": "0", "type": "ARC", "role": "obstruction",
                "points": [[600, 318], [600, 318]], "bulges": [1.6e16, 0]}
@@ -415,6 +426,28 @@ class LayerRoleSafety(unittest.TestCase):
         rep = evaluate(raw_to_model(sheet_raw(extra=[box, far], props={"GARC_LAYER_ROLES": "컨테이너=장애물",
                                                                         "GARC_REGION": "490,290,650,340"})))
         self.assertEqual(status(rep)[VIS], "fail")
+
+    def test_unexpanded_block_outside_region_still_stops(self):
+        """검증(Sonnet) 3차 중간: 못 펼친 블록(배열·OLE)은 삽입점만 오므로, 삽입점이 영역 밖이어도 형상은 영역 안일 수 있다 → 멈춘다."""
+        small = {"handle": "S1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
+                 "points": [[630, 300], [631, 300], [631, 301], [630, 301]]}
+        far_insert = {"handle": "K1", "layer": "컨테이너", "type": "INSERT", "points": [[0, 0]]}
+        props = {"GARC_LAYER_ROLES": "컨테이너=장애물", "GARC_REGION": "490,290,650,340"}
+        self.assertEqual(status(evaluate(raw_to_model(sheet_raw(extra=[small], props=props))))[VIS], "pass")   # 대조군
+        m = raw_to_model(sheet_raw(extra=[small, far_insert], props=props))
+        self.assertEqual(status(evaluate(m))[VIS], "review")
+        self.assertIn("ENTITY_UNSUPPORTED", [i["code"] for i in m["issues"]])
+
+    def test_non_finite_coordinates_are_not_outside(self):
+        """좌표가 NaN·inf면 '영역 밖'으로 버리지 않고 멈춘다(JSON NaN도 json.loads가 받아들인다)."""
+        small = {"handle": "S1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
+                 "points": [[630, 300], [631, 300], [631, 301], [630, 301]]}
+        props = {"GARC_LAYER_ROLES": "컨테이너=장애물", "GARC_REGION": "490,290,650,340"}
+        for typ in ("WIPEOUT", "INSERT"):
+            for v in (float("nan"), float("inf")):
+                bad = {"handle": "N1", "layer": "컨테이너", "type": typ, "points": [[v, v]]}
+                rep = evaluate(raw_to_model(sheet_raw(extra=[small, bad], props=props)))
+                self.assertEqual(status(rep)[VIS], "review", (typ, v))
 
     def test_text_on_mapped_layer_is_ignored(self):
         box = {"handle": "C1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
