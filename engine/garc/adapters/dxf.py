@@ -157,11 +157,14 @@ def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> l
     형상이 하나도 없거나·펼칠 수 없거나·배열 블록(MINSERT)이면 삽입점만 → 엔진 '검토 불가'."""
     if insert.dxf.get("column_count", 1) > 1 or insert.dxf.get("row_count", 1) > 1 or depth > 16:
         return [_insert_fallback(insert, parent_handle)]
+    from ezdxf.entities import DXFTagStorage
     try:
         block = insert.block()
-        # 그래픽 없는 프록시 등은 ezdxf가 콜백도 없이 빠뜨린다 → 블록 정의에 있으면 펼치지 않고 전체를 멈춤
-        if block is None or any(e.dxftype() in _OPAQUE for e in block):
+        # 그래픽 없는 프록시·ezdxf가 모르는 타입(DXFTagStorage: PLANESURFACE·POINTCLOUD·AEC_* 등)은
+        # ezdxf가 콜백도 없이 빠뜨린다 → 블록 정의에 있으면 펼치지 않고 전체를 멈춤
+        if block is None or any(e.dxftype() in _OPAQUE or isinstance(e, DXFTagStorage) for e in block):
             return [_insert_fallback(insert, parent_handle)]
+        n_defined = sum(1 for e in block if e.dxftype() != "ATTDEF")   # ezdxf도 ATTDEF는 펼치지 않는다
     except Exception:
         return [_insert_fallback(insert, parent_handle)]
     skipped: list[str] = []
@@ -171,6 +174,9 @@ def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> l
     except Exception:
         return [_insert_fallback(insert, parent_handle)]
     if any(t not in _ANNOTATION for t in skipped):
+        return [_insert_fallback(insert, parent_handle)]
+    if len(subs) + len(skipped) < n_defined:
+        # 정의된 객체보다 적게 나왔다 = 무언가 알리지 않고 빠졌다(위 목록에 없는 경우까지 막는 안전망)
         return [_insert_fallback(insert, parent_handle)]
     out: list[dict[str, Any]] = []
     for sub in subs:
@@ -231,6 +237,22 @@ def _open(path: str | Path):
         return doc
 
 
+def _layer_name(e) -> str:
+    """객체의 레이어 이름. ezdxf가 모르는 타입(DXFTagStorage)은 e.dxf.layer가 없으므로 원본 태그(그룹 코드 8)에서 찾는다."""
+    try:
+        return str(e.dxf.layer)
+    except Exception:
+        pass
+    try:
+        for sub in e.xtags.subclasses:
+            for tag in sub:
+                if tag.code == 8:
+                    return str(tag.value)
+    except Exception:
+        pass
+    return "0"
+
+
 def read_dxf(path: str | Path, roles: dict[str, str] | None = None) -> dict[str, Any]:
     doc = _open(path)
     msp = doc.modelspace()
@@ -240,8 +262,9 @@ def read_dxf(path: str | Path, roles: dict[str, str] | None = None) -> dict[str,
     entities = []
     layer_counts: dict[str, int] = {}
     for e in msp:
-        layer = e.dxf.layer.strip().upper()
-        layer_counts[e.dxf.layer] = layer_counts.get(e.dxf.layer, 0) + 1
+        layer_raw = _layer_name(e)
+        layer = layer_raw.strip().upper()
+        layer_counts[layer_raw] = layer_counts.get(layer_raw, 0) + 1
         role = role_map.get(str(e.dxf.handle).upper())
         if role is None and layer not in LAYER_ROLES and layer not in mapped_layers:
             continue

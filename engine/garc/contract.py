@@ -321,6 +321,14 @@ def _segment_hits_box(a: list[float], b: list[float], box: tuple[float, float, f
     return True
 
 
+def _has_non_finite(pts: Any) -> bool:
+    """좌표에 NaN·무한대가 있는가(형식이 틀린 좌표는 여기서 판단하지 않고 뒤의 검사에 맡긴다)."""
+    try:
+        return any(not math.isfinite(float(v)) for p in (pts or []) for v in list(p)[:2])
+    except (TypeError, ValueError):
+        return False
+
+
 def _in_region(pts: list[list[float]], box: tuple[float, float, float, float]) -> bool:
     """점이나 선분이 하나라도 영역 안에 걸치면 포함 — 경계에 걸친 객체를 버리지 않는다(장애물을 덜 보지 않게).
     영역을 통째로 둘러싸기만 하는 객체(도면 테두리 등)는 넣지 않는다."""
@@ -464,18 +472,21 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
             source = "layer_map"
         else:
             continue  # GA_ 규약 밖 레이어는 무시
-        etype = str(ent.get("type", "")).upper()
+        etype = str(ent.get("type", "")).strip().upper()
         if source == "layer_map" and etype in ANNOTATION_TYPES:
             continue  # 레이어째 지정한 경우 그 레이어의 문자·치수는 형상이 아니므로 뺀다
+        if _has_non_finite(ent.get("points")):
+            # NaN·무한대 좌표는 영역 안팎도 형상도 알 수 없다 → 어느 경로든(영역 밖으로 버리지 않고) 멈춘다
+            _add_issue(issues, _issue("ENTITY_EMPTY",
+                                      f"{layer} 레이어의 {etype} 객체(handle {ent.get('handle')}) 좌표가 수가 아닙니다(NaN·무한대). 다시 그리세요.",
+                                      [role]))
+            continue
         if source == "layer_map" and region is not None and etype not in SUPPORTED_TYPES:
-            # 영역 밖(평면도 등)의 지원 안 되는 객체 때문에 멈추지 않게 — 영역 판정을 먼저.
-            # 좌표가 없거나 수가 아니면(NaN·inf 포함) 안쪽으로 보고 멈춘다.
+            # 영역 밖(평면도 등)의 지원 안 되는 객체 때문에 멈추지 않게 — 영역 판정을 먼저(좌표가 없으면 안쪽으로 보고 멈춤).
             # 못 펼친 블록(INSERT)은 여기서 거르지 않는다: 삽입점만 전달되므로 삽입점이 영역 밖이어도 형상은 영역 안일 수 있다.
             try:
                 raw_pts = [[float(p[0]), float(p[1])] for p in (ent.get("points") or [])]
             except (TypeError, ValueError, IndexError):
-                raw_pts = []
-            if not all(math.isfinite(v) for p in raw_pts for v in p):
                 raw_pts = []
             if raw_pts and not _in_region(raw_pts, region):
                 layer_role_counts[layer]["out"] += 1

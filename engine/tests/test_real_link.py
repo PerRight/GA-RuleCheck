@@ -314,7 +314,20 @@ class DxfBlocksArcsRoles(unittest.TestCase):
 class NoSilentGeometryLoss(unittest.TestCase):
     """검증(Sonnet) HIGH: 블록을 펼쳤는데 형상이 사라지거나 360° 호가 점이 되면 장애물이 없는 것처럼 '통과'로 샜다."""
 
-    def run_block(self, fill):
+    @staticmethod
+    def inject(path, type_name, block=None, handle="FE01"):
+        """ezdxf가 모르는 타입(DXFTagStorage로 읽힘: PLANESURFACE·AEC_* 등)을 DXF 문자열에 직접 넣는다(ezdxf로는 만들 수 없음)."""
+        import re
+        t = Path(path).read_text(encoding="utf-8")
+        if block:
+            m = re.search(r"\n  0\nBLOCK\n(?:[^\n]*\n){0,14}?  2\n" + block + r"\n", t)
+            j = t.index("\n  0\nENDBLK", m.end())
+        else:
+            j = t.index("\n  0\nENDSEC", t.index("\n  2\nENTITIES\n"))
+        t = t[:j] + f"\n  0\n{type_name}\n  5\n{handle}\n330\n1\n100\nAcDbEntity\n  8\n0" + t[j:]
+        Path(path).write_text(t, encoding="utf-8")
+
+    def run_block(self, fill, inject=None):
         import ezdxf
         from garc.adapters.dxf import read_dxf
         doc = ezdxf.new("R2018")
@@ -333,6 +346,8 @@ class NoSilentGeometryLoss(unittest.TestCase):
             hatch.paths.add_polyline_path([(0, 0), (12, 0), (12, 10.5), (0, 10.5)], is_closed=True)
         elif fill == "text":
             blk.add_text("CONTAINER", dxfattribs={"height": 1})
+        elif fill == "sliver":
+            blk.add_line((0, 0), (1, 0))                                  # 가리지 않는 짧은 선 — 혼자면 '충족'
         elif fill == "proxy":
             # 그래픽 없는 프록시는 ezdxf가 콜백 없이 건너뛴다 — 선 하나가 함께 있으면 '펼쳐진' 것처럼 보였다
             import ezdxf.entities.factory as factory
@@ -358,6 +373,8 @@ class NoSilentGeometryLoss(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "b.dxf"
             doc.saveas(f)
+            if inject:
+                self.inject(f, *inject)
             raw = read_dxf(f)
         return raw, evaluate(raw_to_model(raw))
 
@@ -395,6 +412,21 @@ class NoSilentGeometryLoss(unittest.TestCase):
         raw, rep = self.run_block("proxy")
         self.assertEqual(status(rep)[VIS], "review")
         self.assertIn("INSERT", [e["type"] for e in raw["entities"]])
+
+    def test_unknown_type_in_block_stops(self):
+        """검증(Sonnet) 4차: ezdxf가 모르는 타입(DXFTagStorage)도 블록 안에서 알리지 않고 빠졌다."""
+        raw, rep = self.run_block("sliver")
+        self.assertEqual(status(rep)[VIS], "pass")                         # 대조군
+        for name in ("PLANESURFACE", "AEC_WALL"):
+            raw, rep = self.run_block("sliver", inject=(name, "box"))
+            self.assertEqual(status(rep)[VIS], "review", name)
+            self.assertIn("INSERT", [e["type"] for e in raw["entities"]])
+
+    def test_unknown_type_at_top_level_is_read(self):
+        """모델 공간의 모르는 타입 때문에 DXF 읽기가 죽지 않는다(레이어는 원본 태그에서 읽음)."""
+        raw, rep = self.run_block("sliver", inject=("AEC_WALL", None))
+        self.assertEqual(status(rep)[VIS], "pass")
+        self.assertGreaterEqual(raw["layer_counts"].get("0", 0), 1)
 
     def test_degenerate_arc_in_raw_stops(self):
         bad = {"handle": "A1", "layer": "0", "type": "ARC", "role": "obstruction",
@@ -439,11 +471,11 @@ class LayerRoleSafety(unittest.TestCase):
         self.assertIn("ENTITY_UNSUPPORTED", [i["code"] for i in m["issues"]])
 
     def test_non_finite_coordinates_are_not_outside(self):
-        """좌표가 NaN·inf면 '영역 밖'으로 버리지 않고 멈춘다(JSON NaN도 json.loads가 받아들인다)."""
+        """좌표가 NaN·inf면 '영역 밖'으로 버리지 않고 멈춘다(JSON NaN도 json.loads가 받아들인다). 점 1개짜리 지원 타입도."""
         small = {"handle": "S1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
                  "points": [[630, 300], [631, 300], [631, 301], [630, 301]]}
         props = {"GARC_LAYER_ROLES": "컨테이너=장애물", "GARC_REGION": "490,290,650,340"}
-        for typ in ("WIPEOUT", "INSERT"):
+        for typ in ("WIPEOUT", "INSERT", "POINT", " insert "):
             for v in (float("nan"), float("inf")):
                 bad = {"handle": "N1", "layer": "컨테이너", "type": typ, "points": [[v, v]]}
                 rep = evaluate(raw_to_model(sheet_raw(extra=[small, bad], props=props)))
