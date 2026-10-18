@@ -152,6 +152,22 @@ def _insert_fallback(insert, handle: str) -> dict[str, Any]:
 _OPAQUE = {"ACAD_PROXY_ENTITY", "OLE2FRAME", "OLEFRAME"}
 
 
+def _has_opaque(block, doc, tag_storage, seen: set[str]) -> bool:
+    """블록 정의(중첩 블록 정의까지)에 형상을 알 수 없는 객체가 있는가. 중첩 INSERT는 ezdxf가 재귀 없이
+    평탄화할 때(비균일 축척 + 기울어진 법선)도 있어, 펼치기 전에 정의를 직접 훑는다."""
+    if block.name in seen:
+        return False
+    seen.add(block.name)
+    for e in block:
+        if e.dxftype() in _OPAQUE or isinstance(e, tag_storage):
+            return True
+        if e.dxftype() == "INSERT":
+            inner = doc.blocks.get(e.dxf.name) if doc is not None else None
+            if inner is None or _has_opaque(inner, doc, tag_storage, seen):
+                return True          # 정의가 없는 중첩 블록도 형상을 알 수 없다
+    return False
+
+
 def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> list[dict[str, Any]]:
     """블록을 펼쳐 형상 하위 객체를 낸다(중첩 블록 포함). 하위 객체 handle = '<블록 handle>.<번호>'.
     형상이 하나도 없거나·펼칠 수 없거나·배열 블록(MINSERT)이면 삽입점만 → 엔진 '검토 불가'."""
@@ -162,7 +178,7 @@ def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> l
         block = insert.block()
         # 그래픽 없는 프록시·ezdxf가 모르는 타입(DXFTagStorage: PLANESURFACE·POINTCLOUD·AEC_* 등)은
         # ezdxf가 콜백도 없이 빠뜨린다 → 블록 정의에 있으면 펼치지 않고 전체를 멈춤
-        if block is None or any(e.dxftype() in _OPAQUE or isinstance(e, DXFTagStorage) for e in block):
+        if block is None or _has_opaque(block, insert.doc, DXFTagStorage, set()):
             return [_insert_fallback(insert, parent_handle)]
         n_defined = sum(1 for e in block if e.dxftype() != "ATTDEF")   # ezdxf도 ATTDEF는 펼치지 않는다
     except Exception:

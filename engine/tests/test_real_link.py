@@ -348,6 +348,15 @@ class NoSilentGeometryLoss(unittest.TestCase):
             blk.add_text("CONTAINER", dxfattribs={"height": 1})
         elif fill == "sliver":
             blk.add_line((0, 0), (1, 0))                                  # 가리지 않는 짧은 선 — 혼자면 '충족'
+        elif fill in ("nested_tilt", "nested_tilt_proxy"):
+            # 비균일 축척 블록 안에 법선이 기운 중첩 블록 → ezdxf가 중첩 블록을 재귀 없이 평탄화하는 경로
+            import ezdxf.entities.factory as factory
+            inner = doc.blocks.new("inner")
+            inner.add_line((0, 0), (1, 0))
+            if fill == "nested_tilt_proxy":
+                inner.add_entity(factory.create_db_entry("ACAD_PROXY_ENTITY", {"layer": "0"}, doc))
+            blk.add_blockref("inner", (0, 0), dxfattribs={"extrusion": (1, 0, 1)})
+            obst = msp.add_blockref("box", (100 + ox, 13.5 + oz), dxfattribs={"xscale": 2.0})
         elif fill == "proxy":
             # 그래픽 없는 프록시는 ezdxf가 콜백 없이 건너뛴다 — 선 하나가 함께 있으면 '펼쳐진' 것처럼 보였다
             import ezdxf.entities.factory as factory
@@ -357,6 +366,8 @@ class NoSilentGeometryLoss(unittest.TestCase):
             obst = msp.add_arc((106 + ox, 18 + oz), 6.0, 0, 360)          # 꼭대기 z=24
         elif fill == "circle":
             obst = msp.add_circle((106 + ox, 18 + oz), 6.0)
+        elif fill.startswith("nested_tilt"):
+            pass                                                           # obst는 위에서 만듦
         elif fill == "minsert":
             blk.add_lwpolyline([(0, 0), (0, 10.5), (12, 10.5), (12, 0)], close=True)
             obst = msp.add_blockref("box", (100 + ox, 13.5 + oz))
@@ -422,6 +433,14 @@ class NoSilentGeometryLoss(unittest.TestCase):
             self.assertEqual(status(rep)[VIS], "review", name)
             self.assertIn("INSERT", [e["type"] for e in raw["entities"]])
 
+    def test_proxy_in_flattened_nested_block_stops(self):
+        """검증(Sonnet) 5차: ezdxf가 중첩 블록을 평탄화하면 안쪽 정의의 프록시가 검사 없이 빠졌다 → 정의를 재귀로 훑는다."""
+        raw, rep = self.run_block("nested_tilt")
+        self.assertNotIn("INSERT", [e["type"] for e in raw["entities"]])   # 대조군: 펼쳐짐
+        raw, rep = self.run_block("nested_tilt_proxy")
+        self.assertEqual(status(rep)[VIS], "review")
+        self.assertIn("INSERT", [e["type"] for e in raw["entities"]])
+
     def test_unknown_type_at_top_level_is_read(self):
         """모델 공간의 모르는 타입 때문에 DXF 읽기가 죽지 않는다(레이어는 원본 태그에서 읽음)."""
         raw, rep = self.run_block("sliver", inject=("AEC_WALL", None))
@@ -476,7 +495,7 @@ class LayerRoleSafety(unittest.TestCase):
                  "points": [[630, 300], [631, 300], [631, 301], [630, 301]]}
         props = {"GARC_LAYER_ROLES": "컨테이너=장애물", "GARC_REGION": "490,290,650,340"}
         for typ in ("WIPEOUT", "INSERT", "POINT", " insert "):
-            for v in (float("nan"), float("inf")):
+            for v in (float("nan"), float("inf"), 10 ** 400):             # 10**400: float로 못 바꾸는 정수
                 bad = {"handle": "N1", "layer": "컨테이너", "type": typ, "points": [[v, v]]}
                 rep = evaluate(raw_to_model(sheet_raw(extra=[small, bad], props=props)))
                 self.assertEqual(status(rep)[VIS], "review", (typ, v))

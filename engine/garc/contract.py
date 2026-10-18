@@ -217,15 +217,17 @@ def _entity_points(ent: dict[str, Any], tol: float | None) -> list[list[float]]:
     tol = 호 근사 허용 이격(도면 단위). None이면(단위 불명) 형식만 검사하고 분할하지 않는다."""
     try:
         pts = [[float(p[0]), float(p[1])] for p in (ent.get("points") or [])]
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, KeyError, OverflowError):
         raise ContractError(f"좌표 형식 오류 (handle {ent.get('handle')})") from None
     closed = bool(ent.get("closed"))
     bulges = ent.get("bulges") or []
+    if not isinstance(bulges, (list, tuple)):
+        raise ContractError(f"bulges 형식 오류 (handle {ent.get('handle')})")
     if len(pts) < 2 or tol is None:
         if bulges:
             try:
                 ok = len(bulges) == len(pts) and all(math.isfinite(float(b)) for b in bulges)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 ok = False
             if not ok:
                 raise ContractError(f"bulges 형식 오류 (handle {ent.get('handle')})")
@@ -234,7 +236,7 @@ def _entity_points(ent: dict[str, Any], tol: float | None) -> list[list[float]]:
         raise ContractError(f"bulges 개수({len(bulges)})가 꼭짓점 수({len(pts)})와 다릅니다 (handle {ent.get('handle')})")
     try:
         bulges = [float(b) for b in bulges]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ContractError(f"bulge 값 형식 오류 (handle {ent.get('handle')})") from None
     if not all(math.isfinite(b) for b in bulges):
         raise ContractError(f"bulge 값이 유한하지 않습니다 (handle {ent.get('handle')})")
@@ -325,7 +327,9 @@ def _has_non_finite(pts: Any) -> bool:
     """좌표에 NaN·무한대가 있는가(형식이 틀린 좌표는 여기서 판단하지 않고 뒤의 검사에 맡긴다)."""
     try:
         return any(not math.isfinite(float(v)) for p in (pts or []) for v in list(p)[:2])
-    except (TypeError, ValueError):
+    except OverflowError:
+        return True                      # 10**400 같은 정수 — float로 나타낼 수 없음 = 무한대와 같다
+    except (TypeError, ValueError, KeyError):
         return False
 
 
@@ -486,7 +490,7 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
             # 못 펼친 블록(INSERT)은 여기서 거르지 않는다: 삽입점만 전달되므로 삽입점이 영역 밖이어도 형상은 영역 안일 수 있다.
             try:
                 raw_pts = [[float(p[0]), float(p[1])] for p in (ent.get("points") or [])]
-            except (TypeError, ValueError, IndexError):
+            except (TypeError, ValueError, IndexError, KeyError, OverflowError):
                 raw_pts = []
             if raw_pts and not _in_region(raw_pts, region):
                 layer_role_counts[layer]["out"] += 1
