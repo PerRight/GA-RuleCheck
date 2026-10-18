@@ -95,6 +95,25 @@ def max_height_at(eye: tuple[float, float], x_obj: float, x_target: float, a: fl
     return ez + (x_obj - ex) * (z_target - ez) / (x_target - ex)
 
 
+def _handle_list(model: dict[str, Any], handles: list[str], cap: int = 6) -> str:
+    """제안 문구용 handle 목록 — 펼친 블록의 하위 객체는 '블록 1F3(하위 n개)'로 묶고, 많으면 줄인다(실도면 블록은 하위 객체가 수천 개)."""
+    block_of = {o["handle"]: o.get("block") for o in model.get("objects", [])}
+    tokens: list[str] = []
+    seen: dict[str, int] = {}
+    for h in handles:
+        b = block_of.get(h)
+        if b:
+            if b not in seen:
+                seen[b] = len(tokens)
+                tokens.append(b)
+            continue
+        tokens.append(h)
+    counts = {b: sum(1 for h in handles if block_of.get(h) == b) for b in seen}
+    shown = [f"블록 {t}(하위 {counts[t]}개)" if t in counts else t for t in tokens[:cap]]
+    more = f" 외 {len(tokens) - cap}개" if len(tokens) > cap else ""
+    return "handle " + ", ".join(shown) + more
+
+
 def _floor_cm(v: float) -> float:
     """'이하로' 제안값은 내림(그대로 적용해도 기준을 넘지 않게). 1e-7 cm 여유는 부동소수점 잡음 흡수용."""
     return math.floor(v * 100 + 1e-7) / 100
@@ -344,7 +363,7 @@ def check_visibility(model: dict[str, Any], r: Rule) -> RuleResult:
     sugg = (f"x={ox:.2f} m 장애물(handle {crit_h}) 상단을 z={zmax_disp:.2f} m 이하로 낮추거나"
             f"(입력된 모든 흘수 조건 기준, 가장 엄격한 조건: '{gov_cond}'), 선수 트림을 줄이거나, 선교 높이를 올리세요.")
     if others:
-        sugg += f" 다른 객체(handle {', '.join(others)})도 단독으로 허용 한계를 넘으므로 함께 조정해야 합니다."
+        sugg += f" 다른 객체({_handle_list(model, others)})도 단독으로 허용 한계를 넘으므로 함께 조정해야 합니다."
     if math.isinf(d):
         msg = f"장애물이 눈높이 이상 — 시선이 수면에 닿지 않음 (허용 {limit:g} m, {worst['condition']})"
         actual = None

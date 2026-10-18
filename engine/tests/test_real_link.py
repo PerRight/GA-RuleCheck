@@ -162,6 +162,21 @@ class LayerRolesRegion(unittest.TestCase):
             self.assertEqual(rep.overall, "incomplete", props)
 
 
+class BlockSuggestionText(unittest.TestCase):
+    def test_block_sub_handles_are_grouped(self):
+        """실도면 크레인 블록은 하위 객체가 수천 개 — 제안 문구에 handle을 다 늘어놓지 않고 블록으로 묶는다."""
+        subs = [{"handle": f"K1.{i}", "block": "K1", "layer": "0", "type": "LINE", "role": "obstruction",
+                 "points": [[60 + i * 0.1 + 500, 14.5 + 300], [60 + i * 0.1 + 500, 28.5 + 300]]} for i in range(40)]
+        tall = {"handle": "C1", "layer": "0", "type": "LWPOLYLINE", "role": "obstruction", "closed": True,
+                "points": [[x + 500, z + 300] for x, z in [(100, 13.5), (100, 27.0), (112, 27.0), (112, 13.5)]]}
+        rep = evaluate(raw_to_model(sheet_raw(extra=[tall, *subs])))
+        vis = next(r for r in rep.results if r.rule_id == VIS)
+        self.assertEqual(vis.status, "fail")
+        self.assertIn("블록 K1(하위", vis.suggestion_ko)
+        self.assertNotIn("K1.17", vis.suggestion_ko)
+        self.assertLess(len(vis.suggestion_ko), 400)
+
+
 class LbpCheck(unittest.TestCase):
     def test_lbp_matches_ap_fp(self):
         rep = evaluate(raw_to_model(sheet_raw(props={"GARC_LBP": "132"})))
