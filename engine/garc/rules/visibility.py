@@ -266,9 +266,9 @@ def check_visibility(model: dict[str, Any], r: Rule) -> RuleResult:
     if mid_bottom is not None and ship["z_base"] > mid_bottom + tol_len:
         return r.result("review", f"기선 z={ship['z_base']:g} m(GARC_Z_BASE)가 도면 선체 중앙부 바닥 z={mid_bottom:.2f} m보다 "
                                   f"{tol_len:.1f} m 넘게 높습니다 — 기선 높이 확인.")
-    # 기선이 선체 최저점보다 한참 아래면(원점이 기선이 아닌 실도면에서 기선을 안 넣어 기본값 0을 쓰거나 GARCSETUP의 0이 남은 경우),
-    # 수선이 배 아래로 내려가 시야가 실제보다 좋게 계산된다 → 통과로 새지 않게 멈춘다.
-    # (선체 윤곽에 바닥·용골 쪽 선이 하나도 없으면 정상 도면도 여기서 멈춘다 — 안전 쪽. 선체에 바닥선을 포함하면 풀린다.)
+    # 기선이 선체 최저점보다 한참 아래면(원점이 기선이 아닌 실도면에서 기선을 안 넣어 기본값 0을 쓰거나 GARCSETUP의 0이 남은 경우)
+    # 수선이 배 아래 엉뚱한 높이에 놓여 판정 자체가 뜻이 없다(수선이 낮아지면 사각 거리가 커지므로 대개 '거짓 위반') → 멈춘다.
+    # (선체 윤곽에 바닥·용골 쪽 선이 하나도 없으면 정상 도면도 여기서 멈춘다. 선체에 바닥선을 포함하면 풀린다.)
     if min(hull_z) > ship["z_base"] + tol_len:
         why = "입력되지 않아 기본값 0을 씁니다" if "z_base" in model.get("defaults", ()) else f"z={ship['z_base']:g} m입니다"
         return r.result("review", f"기선(GARC_Z_BASE)이 {why} — 도면 선체 최저점 z={min(hull_z):.2f} m보다 {tol_len:.1f} m 넘게 아래. "
@@ -311,6 +311,10 @@ def check_visibility(model: dict[str, Any], r: Rule) -> RuleResult:
     judged = hull + objects_by_role(model, "obstruction")
     if ok:
         msg = f"사각 거리 {d:.2f} m ≤ 허용 {limit:g} m (최악: {worst['condition']})"
+        if all(abs(c["t_aft"] - c["t_fwd"]) < 1e-9 for c in model["conditions"]):
+            # 도면 치수표의 설계·구조 흘수(등흘수)만 넣은 경우 — 보통 가장 불리한 밸러스트(트림) 상태가 빠져 있다
+            msg += " — 트림이 있는 흘수 조건(밸러스트 등)이 없어 가장 불리한 상태는 검토하지 않았을 수 있음"
+            evidence["notes"].append("흘수 조건이 모두 등흘수 — 트림 있는 조건(밸러스트 등) 추가 검토 필요")
         return r.result("pass", msg, actual=round(d, 3), limit=limit, condition=worst["condition"],
                         evidence=evidence, overlays=overlays, targets=[],
                         elements=_element_checks(r, judged, eyes[0], eye, x_bow, limit, per_cond, d, True,

@@ -310,7 +310,126 @@ class DxfBlocksArcsRoles(unittest.TestCase):
         self.assertNotIn("pass", status(rep).values())                 # 역할 지정 전: 입력 누락
 
 
+@unittest.skipUnless(importlib.util.find_spec("ezdxf"), "ezdxf 없음")
+class NoSilentGeometryLoss(unittest.TestCase):
+    """검증(Sonnet) HIGH: 블록을 펼쳤는데 형상이 사라지거나 360° 호가 점이 되면 장애물이 없는 것처럼 '통과'로 샜다."""
+
+    def run_block(self, fill):
+        import ezdxf
+        from garc.adapters.dxf import read_dxf
+        doc = ezdxf.new("R2018")
+        doc.header["$INSUNITS"] = 4
+        msp = doc.modelspace()
+        ox, oz = 500.0, 300.0
+        h = msp.add_lwpolyline([(x + ox, z + oz) for x, z in HULL], dxfattribs={"layer": "선체"})
+        eye = msp.add_point((18 + ox, 28 + oz))
+        bhd = msp.add_line((124.5 + ox, oz), (124.5 + ox, 14.5 + oz))
+        blk = doc.blocks.new("box")
+        obst = None
+        if fill == "solid":
+            blk.add_solid([(0, 0), (12, 0), (0, 10.5), (12, 10.5)])      # 꼭짓점 순서 1·2·4·3이 둘레
+        elif fill == "hatch":
+            hatch = blk.add_hatch()
+            hatch.paths.add_polyline_path([(0, 0), (12, 0), (12, 10.5), (0, 10.5)], is_closed=True)
+        elif fill == "text":
+            blk.add_text("CONTAINER", dxfattribs={"height": 1})
+        if fill == "arc360":
+            obst = msp.add_arc((106 + ox, 18 + oz), 6.0, 0, 360)          # 꼭대기 z=24
+        elif fill == "circle":
+            obst = msp.add_circle((106 + ox, 18 + oz), 6.0)
+        elif fill == "minsert":
+            blk.add_lwpolyline([(0, 0), (0, 10.5), (12, 10.5), (12, 0)], close=True)
+            obst = msp.add_blockref("box", (100 + ox, 13.5 + oz))
+            obst.dxf.column_count, obst.dxf.column_spacing = 2, 13
+        else:
+            obst = msp.add_blockref("box", (100 + ox, 13.5 + oz))
+        for k, v in {**ship_props(500, 300), "GARC_SCALE": "1/1000"}.items():
+            doc.header.custom_vars.append(k, v)
+        xr = doc.rootdict.add_xrecord("GARC_ROLES")
+        tags = []
+        for role, ent in (("hull", h), ("eye", eye), ("collision_bhd", bhd), ("obstruction", obst)):
+            tags += [(1, role), (330, ent.dxf.handle)]
+        xr.reset(tags)
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "b.dxf"
+            doc.saveas(f)
+            raw = read_dxf(f)
+        return raw, evaluate(raw_to_model(raw))
+
+    def test_solid_block_is_polygon(self):
+        raw, rep = self.run_block("solid")
+        self.assertEqual(status(rep)[VIS], "fail")
+        self.assertIn("SOLID", [e["type"] for e in raw["entities"]])
+
+    def test_hatch_block_uses_boundary(self):
+        raw, rep = self.run_block("hatch")
+        self.assertEqual(status(rep)[VIS], "fail")
+
+    def test_text_only_block_stops(self):
+        raw, rep = self.run_block("text")
+        self.assertEqual(status(rep)[VIS], "review")                     # 형상 0개 → 삽입점만 → 검토 불가
+
+    def test_full_circle_arc_is_kept(self):
+        raw, rep = self.run_block("arc360")
+        self.assertEqual(status(rep)[VIS], "fail")
+        arc = next(e for e in raw["entities"] if e["type"] == "ARC")
+        self.assertEqual(arc["bulges"], [1.0, 1.0])
+
+    def test_circle_obstruction(self):
+        raw, rep = self.run_block("circle")
+        self.assertEqual(status(rep)[VIS], "fail")
+        c = next(e for e in raw["entities"] if e["type"] == "CIRCLE")
+        self.assertEqual((len(c["points"]), c["bulges"], c["closed"]), (2, [1.0, 1.0], True))
+
+    def test_minsert_stops(self):
+        raw, rep = self.run_block("minsert")
+        self.assertEqual(status(rep)[VIS], "review")
+
+    def test_degenerate_arc_in_raw_stops(self):
+        bad = {"handle": "A1", "layer": "0", "type": "ARC", "role": "obstruction",
+               "points": [[600, 318], [600, 318]], "bulges": [1.6e16, 0]}
+        self.assertEqual(status(evaluate(raw_to_model(sheet_raw(extra=[bad]))))[VIS], "review")
+
+
+class LayerRoleSafety(unittest.TestCase):
+    def test_region_that_excludes_everything_stops(self):
+        """영역을 m 값으로 잘못 넣어 매핑 레이어 객체가 전부 빠지면 장애물이 없는 것처럼 통과하지 않게."""
+        box = {"handle": "C1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
+               "points": [[x + 500, z + 300] for x, z in CONTAINER]}
+        m = raw_to_model(sheet_raw(extra=[box], props={"GARC_LAYER_ROLES": "컨테이너=장애물", "GARC_REGION": "0,0,140,30"}))
+        self.assertEqual(status(evaluate(m))[VIS], "review")
+        self.assertEqual(next(i for i in readiness(m)["items"] if i["key"] == "obstruction")["status"], "invalid")
+
+    def test_text_on_mapped_layer_is_ignored(self):
+        box = {"handle": "C1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
+               "points": [[x + 500, z + 300] for x, z in CONTAINER]}
+        label = {"handle": "T1", "layer": "컨테이너", "type": "MTEXT", "points": [[606, 318]]}
+        rep = evaluate(raw_to_model(sheet_raw(extra=[box, label], props={"GARC_LAYER_ROLES": "컨테이너=장애물",
+                                                                          "GARC_REGION": "490,290,650,340"})))
+        self.assertEqual(status(rep)[VIS], "fail")                         # 문자 때문에 '검토 불가'가 되지 않음
+
+    def test_ambiguous_layer_roles_stop(self):
+        for text in ("컨테이너=장애물; 컨테이너=선체", "GA_OBST=선체"):
+            rep = evaluate(raw_to_model(sheet_raw(props={"GARC_LAYER_ROLES": text, "GARC_REGION": "490,290,650,340"})))
+            self.assertEqual(rep.overall, "incomplete", text)
+
+
+class ConditionWarnings(unittest.TestCase):
+    def test_even_keel_only_pass_is_flagged(self):
+        rep = evaluate(raw_to_model(sheet_raw(props={"GARC_CONDITIONS": "설계 흘수(등흘수):8/8"})))
+        vis = next(r for r in rep.results if r.rule_id == VIS)
+        self.assertEqual(vis.status, "pass")
+        self.assertIn("트림", vis.message_ko)
+
+    def test_two_bulkheads_not_ready(self):
+        extra = [{"handle": "B2", "layer": "0", "type": "LINE", "role": "collision_bhd", "points": [[620, 300], [620, 314.5]]}]
+        r = readiness(raw_to_model(sheet_raw(extra=extra)))
+        self.assertEqual(next(i for i in r["items"] if i["key"] == "collision_bhd")["status"], "invalid")
+        self.assertFalse(r["all_ready"])
+
+
 class Particulars(unittest.TestCase):
+    # 합성 값(실도면 값 아님). 표 모양만 실도면 5건에서 확인한 두 가지를 흉내 낸다.
     CELLS = [  # 모양 1) 칸마다 TEXT
         {"text": "PRINCIPAL DIMENSIONS", "x": 510.0, "y": 160.0, "h": 3.0},
         {"text": "LENGTH O. A", "x": 500.0, "y": 150.0, "h": 3.0}, {"text": "251.00 M", "x": 570.0, "y": 150.0, "h": 3.0},
@@ -345,6 +464,18 @@ class Particulars(unittest.TestCase):
         v = {k: i["value"] for k, i in out["items"].items()}
         self.assertEqual((v["loa"], v["lbp"], v["draft_design"], v["scale"]), (188.4, 180.0, 10.1, 1000.0))
         self.assertEqual(v["ship_type"], "SAMPLE PRODUCT TANKER")    # MIDSHIP SECTION은 선종 아님
+
+    def test_misaligned_column_is_not_used(self):
+        """값 열에 'REV A' 같은 줄이 끼어 한 칸씩 밀리면 그 열은 쓰지 않는다(LBP에 LOA 값이 들어가는 오독 방지)."""
+        cols = [dict(self.COLUMNS[0]), dict(self.COLUMNS[1])]
+        cols[1]["text"] = "REV A\n\n188.40M\n\n180.00M\n\n32.20M\n\n18.60M\n\n10.10M\n\n11.90M"
+        out = find_particulars(cols)
+        self.assertEqual(out["items"]["lbp"]["status"], "missing")
+        self.assertEqual(out["items"]["loa"]["status"], "missing")
+
+    def test_implausible_value_is_ignored(self):
+        out = find_particulars([{"text": "LENGTH O. A", "x": 0, "y": 0, "h": 2}, {"text": "1", "x": 20, "y": 0, "h": 2}])
+        self.assertEqual(out["items"]["loa"]["status"], "missing")
 
     def test_conflict_is_not_guessed(self):
         out = find_particulars(self.CELLS + [{"text": "LENGTH O. A", "x": 10, "y": 10, "h": 2},

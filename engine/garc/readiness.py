@@ -98,7 +98,7 @@ def readiness(model: dict[str, Any]) -> dict[str, Any]:
     # 도면 객체(역할)
     for role, name, required, rules, hint in ROLE_ITEMS:
         objs = objects_by_role(model, role)
-        bad = next((i for i in issues if i["code"] in ("ENTITY_UNSUPPORTED", "ENTITY_EMPTY", "EYE_SHAPE", "LAYER_NEAR_MISS")
+        bad = next((i for i in issues if i["code"] in ("ENTITY_UNSUPPORTED", "ENTITY_EMPTY", "EYE_SHAPE", "LAYER_NEAR_MISS", "LAYER_ROLES_EMPTY")
                     and role in i["roles"]), None)
         if bad:
             add(role, name, required, rules, "invalid", f"{len(objs)}개", hint, bad["message_ko"])
@@ -106,8 +106,11 @@ def readiness(model: dict[str, Any]) -> dict[str, Any]:
             add(role, name, required, rules, "missing" if required else "optional", None, hint)
         elif role == "eye" and len(objs) > 1:
             add(role, name, required, rules, "invalid", f"{len(objs)}개", hint, "조종위치는 하나만 있어야 합니다.")
+        elif role == "collision_bhd" and len(objs) > 1:
+            add(role, name, required, rules, "invalid", f"{len(objs)}개", hint, "충돌격벽은 선(계단형이면 폴리선) 하나여야 합니다.")
         else:
-            add(role, name, required, rules, "ok", f"{len(objs)}개", hint)
+            lay = [f"{ln} 영역 안 {c['in']}·밖 {c['out']}" for ln, c in (model.get("layer_role_counts") or {}).items() if c["role"] == role]
+            add(role, name, required, rules, "ok", f"{len(objs)}개" + (f" (레이어 {', '.join(lay)})" if lay else ""), hint)
 
     req = [i for i in items if i["required"]]
     # 계약 문제 전부(항목에 붙지 않은 것 포함) — 하나라도 있으면 그 규칙은 '검토 불가'이므로 '준비 완료'로 보지 않는다

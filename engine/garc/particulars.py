@@ -29,7 +29,9 @@ LABEL_KO = {k: ko for k, ko, _ in LABELS}
 _VALUE = re.compile(r"^\s*([0-9]{1,4}(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(M|m|미터)?\s*$")
 _SCALE = re.compile(r"(?:^|SCALE\s*[:=]?\s*|축척\s*)1\s*[/:]\s*([0-9]{1,5})\s*$", re.I)
 _SHIP_TYPE = re.compile(r"\b(CONTAINER\s+(SHIP|VESSEL|CARRIER)|TANKER|BULK\s+CARRIER|CARRIER|PCTC|RO-?RO|FERRY)\b|컨테이너선|유조선|운반선", re.I)
+# 그럴듯한 범위(오독 거르기용, 규정값 아님) — 밖이면 후보로 쓰지 않는다
 MAX_VALUE = {"loa": 500.0, "lbp": 500.0, "breadth": 80.0, "depth": 50.0, "draft_design": 30.0, "draft_scantling": 30.0}
+MIN_VALUE = {"loa": 10.0, "lbp": 10.0, "breadth": 2.0, "depth": 1.0, "draft_design": 0.5, "draft_scantling": 0.5}
 
 
 def _lines(text: str) -> list[str]:
@@ -74,7 +76,7 @@ def find_particulars(texts: list[dict[str, Any]]) -> dict[str, Any]:
     found: dict[str, list[dict[str, Any]]] = {}
 
     def add(key: str, value: float, label: str, vtext: str, at: tuple[float, float], how: str) -> None:
-        if key in MAX_VALUE and not (0 < value <= MAX_VALUE[key]):
+        if key in MAX_VALUE and not (MIN_VALUE[key] <= value <= MAX_VALUE[key]):
             return
         found.setdefault(key, []).append({"value": value, "label": label, "text": vtext,
                                           "at": [round(at[0], 3), round(at[1], 3)], "how": how})
@@ -89,11 +91,11 @@ def find_particulars(texts: list[dict[str, Any]]) -> dict[str, Any]:
                     and abs(o["y"] - it["y"]) <= max(it["h"], o["h"]) * 0.8 and len(o["full"]) == len(it["full"])]
             if cols:
                 col = min(cols, key=lambda o: o["x"] - it["x"])
-                for k, lab, val in zip(keys, it["full"], col["full"]):
-                    if not k:
-                        continue
-                    v = _scale(val) if k == "scale" else _num(val)
-                    if v is not None:
+                pairs = [(k, lab, val, _scale(val) if k == "scale" else _num(val))
+                         for k, lab, val in zip(keys, it["full"], col["full"]) if k]
+                # 이름이 있는 줄의 값이 하나라도 숫자가 아니면 줄이 밀린 것(값 열에 'REV A' 같은 줄) → 이 열은 쓰지 않는다
+                if pairs and all(v is not None for *_, v in pairs):
+                    for k, lab, val, v in pairs:
                         add(k, v, lab, val, (col["x"], col["y"]), "표(여러 줄 문자 열)")
             continue
         k = keys[0]

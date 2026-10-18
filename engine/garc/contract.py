@@ -61,7 +61,14 @@ ROLE_ALIASES: dict[str, str] = {
 }
 
 # ARC·CIRCLE은 points + bulges(호)로, ELLIPSE·SPLINE은 추출기가 촘촘히 꺾은선으로 바꿔 보낸다.
-SUPPORTED_TYPES = {"LINE", "LWPOLYLINE", "POLYLINE", "POINT", "INSERT", "ARC", "CIRCLE", "ELLIPSE", "SPLINE"}
+# SOLID(4점 채움)는 다각형으로, HATCH는 경계 고리마다 닫힌 꺾은선으로 보낸다(채움 영역도 시야를 막으므로 버리지 않는다).
+SUPPORTED_TYPES = {"LINE", "LWPOLYLINE", "POLYLINE", "POINT", "INSERT", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "SOLID", "HATCH"}
+# 주석(형상 아님) — 레이어 단위 역할(GARC_LAYER_ROLES)로 들어온 것은 조용히 뺀다. DXF 이름과 AutoCAD .NET 클래스 이름 모두.
+ANNOTATION_TYPES = {"TEXT", "MTEXT", "DBTEXT", "ATTRIB", "ATTDEF", "ATTRIBUTEDEFINITION", "ATTRIBUTEREFERENCE",
+                    "DIMENSION", "ARC_DIMENSION", "LARGE_RADIAL_DIMENSION", "ROTATEDDIMENSION", "ALIGNEDDIMENSION",
+                    "RADIALDIMENSION", "RADIALDIMENSIONLARGE", "DIAMETRICDIMENSION", "ARCDIMENSION", "ORDINATEDIMENSION",
+                    "LINEANGULARDIMENSION2", "POINT3ANGULARDIMENSION", "LEADER", "MLEADER", "MULTILEADER", "TOLERANCE",
+                    "FEATURECONTROLFRAME"}
 SCALE_MIN, SCALE_MAX = 1, 10_000     # 도면 축척 1/N의 N 범위(오타 감지용)
 
 # $INSUNITS → 1 도면 단위당 m
@@ -201,6 +208,10 @@ def _arc_points(p0: tuple[float, float], p1: tuple[float, float], bulge: float, 
     return [[cx + big * math.cos(a0 + step * (j + 0.5)), cy + big * math.sin(a0 + step * (j + 0.5))] for j in range(n)]
 
 
+class DegenerateArc(ValueError):
+    """시작점 = 끝점인데 bulge가 있는 호(예: 360° ARC를 호 하나로 보낸 것) — 점 하나로 무너뜨리지 않고 멈춘다."""
+
+
 def _entity_points(ent: dict[str, Any], tol: float | None) -> list[list[float]]:
     """raw 좌표(도면 단위) → 숫자 점 목록. 호(bulge)는 외접 꺾은선으로 바꾸고, 닫힌 폴리선은 시작점을 끝에 붙인다.
     tol = 호 근사 허용 이격(도면 단위). None이면(단위 불명) 형식만 검사하고 분할하지 않는다."""
@@ -233,6 +244,8 @@ def _entity_points(ent: dict[str, Any], tol: float | None) -> list[list[float]]:
     for i in range(n):
         out.append(pts[i])
         if i < segs and bulges and abs(bulges[i]) > BULGE_EPS:
+            if pts[i] == pts[(i + 1) % n]:
+                raise DegenerateArc(f"handle {ent.get('handle')}: 시작점과 끝점이 같은 호(360°?)는 형상을 알 수 없습니다")
             out.extend(_arc_points(tuple(pts[i]), tuple(pts[(i + 1) % n]), bulges[i], tol))
     if closed and pts[0] != pts[-1]:
         out.append(list(pts[0]))
@@ -264,7 +277,8 @@ def parse_region(text: Any) -> tuple[float, float, float, float]:
 
 
 def parse_layer_roles(text: Any) -> dict[str, str]:
-    """'컨테이너=장애물; HULL=hull' → {레이어(대문자·앞뒤 공백 제거): 역할}. 모르는 역할이면 ValueError."""
+    """'컨테이너=장애물; HULL=hull' → {레이어(대문자·앞뒤 공백 제거): 역할}.
+    모르는 역할, 같은 레이어에 다른 역할 두 번, GA_ 레이어(이미 역할이 있음)는 ValueError — 어느 쪽인지 고르지 않는다."""
     out: dict[str, str] = {}
     for chunk in str(text or "").replace("\n", ";").split(";"):
         chunk = chunk.strip()
@@ -278,7 +292,12 @@ def parse_layer_roles(text: Any) -> dict[str, str]:
             raise ValueError(f"레이어 역할 '{chunk}': 역할은 선체·장애물·조종위치·충돌격벽·구상선수 중 하나")
         if r == "eye":
             raise ValueError(f"레이어 역할 '{chunk}': 조종위치는 점 1개라 레이어 단위로 지정할 수 없습니다")
-        out[layer.upper()] = r
+        key = layer.upper()
+        if key in LAYER_ROLES:
+            raise ValueError(f"레이어 역할 '{chunk}': {key}는 이미 정해진 역할({LAYER_ROLES[key]})이 있는 GA_ 레이어입니다")
+        if out.get(key, r) != r:
+            raise ValueError(f"레이어 '{layer}'에 역할이 두 가지({out[key]}, {r}) 지정됐습니다")
+        out[key] = r
     return out
 
 
@@ -427,6 +446,7 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
     objects = []
     total_points = 0
     bad_roles: set[str] = set()
+    layer_role_counts: dict[str, dict[str, Any]] = {}   # 레이어 단위 역할: 영역 안·밖 객체 수
     for ent in raw.get("entities", []):
         layer = str(ent.get("layer", "")).strip().upper()
         source = "layer"
@@ -444,6 +464,8 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
         else:
             continue  # GA_ 규약 밖 레이어는 무시
         etype = str(ent.get("type", "")).upper()
+        if source == "layer_map" and etype in ANNOTATION_TYPES:
+            continue  # 레이어째 지정한 경우 그 레이어의 문자·치수는 형상이 아니므로 뺀다
         if etype not in SUPPORTED_TYPES:
             _add_issue(issues, _issue("ENTITY_UNSUPPORTED",
                                       f"{layer} 레이어의 {etype} 객체(handle {ent.get('handle')})는 지원하지 않습니다. 선/폴리선/점으로 바꾸세요.",
@@ -456,9 +478,17 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
                                       "블록을 분해(EXPLODE)하거나 폴리선으로 다시 그리세요. 블록은 GA_EYE(조종위치 점)에만 쓸 수 있습니다.",
                                       [role]))
             continue
-        pts = _entity_points(ent, ARC_TOL_M / scale if scale else None)
-        if source == "layer_map" and region is not None and not _in_region(pts, region):
-            continue  # 측면도 영역 밖(평면도·단면도 등) — 레이어 단위 역할에서만 거른다
+        try:
+            pts = _entity_points(ent, ARC_TOL_M / scale if scale else None)
+        except DegenerateArc as e:
+            _add_issue(issues, _issue("ENTITY_EMPTY", f"{layer} 레이어의 {etype} 객체: {e}. 원(CIRCLE)이나 호 두 개로 그리세요.", [role]))
+            continue
+        if source == "layer_map":
+            cnt = layer_role_counts.setdefault(layer, {"role": role, "in": 0, "out": 0})
+            if region is not None and not _in_region(pts, region):
+                cnt["out"] += 1
+                continue  # 측면도 영역 밖(평면도·단면도 등) — 레이어 단위 역할에서만 거른다
+            cnt["in"] += 1
         total_points += len(pts)
         if total_points > MAX_MODEL_POINTS:
             raise ContractError(f"GA_ 레이어 좌표가 너무 많습니다(호 분할 후 {MAX_MODEL_POINTS:,}점 초과) — "
@@ -475,11 +505,18 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
         objects.append(obj)
     for r in sorted(bad_roles):
         issues.append(_issue("ENTITY_ROLE_UNKNOWN", f"객체에 붙은 역할 '{r}'를 알 수 없습니다 — 플러그인과 엔진 버전을 확인하세요."))
+    for lname, cnt in sorted(layer_role_counts.items()):
+        if cnt["in"] == 0 and cnt["out"] > 0:
+            # 영역을 잘못 잡으면(예: m 값으로 입력) 그 레이어 객체가 전부 빠져 장애물이 없는 것처럼 보인다 → 멈춘다
+            issues.append(_issue("LAYER_ROLES_EMPTY",
+                                 f"레이어 '{lname}'의 객체 {cnt['out']}개가 모두 측면도 영역(GARC_REGION, 도면 단위) 밖입니다 — 영역을 다시 지정하세요.",
+                                 [cnt["role"]]))
 
     model = {
         "schema": SCHEMA_MODEL,
         "units_scale": scale,
         "scale_n": scale_n,
+        "layer_role_counts": layer_role_counts,
         # 입력이 없어 기본값을 쓴 선박 정보(준비 상태 표시·기선 대조용)
         "defaults": [f for f, key in (("z_base", "GARC_Z_BASE"), ("eye_height", "GARC_EYE_HEIGHT")) if not props.get(key)],
         "source": raw.get("source") or {},

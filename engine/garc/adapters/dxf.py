@@ -14,7 +14,10 @@ AutoCAD 플러그인(Extractor.cs)과 같은 raw를 만든다. 즉 DXF로 통과
   시험용으로 바깥에서 {handle: 역할} 표를 줄 수도 있다(read_dxf(roles=...)).
 - 도면 특성 GARC_LAYER_ROLES에 적힌 레이어의 객체도 보낸다(측면도 영역 거르기는 엔진이 한다).
 - 역할이 있는 블록(INSERT, 조종위치 제외)은 펼쳐서 하위 객체를 보낸다: handle '<블록 handle>.<번호>', block = 블록 handle.
-  안쪽 문자·치수·해치는 형상이 아니므로 뺀다. 중첩 블록도 펼친다.
+  안쪽 문자·치수·지시선(주석)만 뺀다. 솔리드는 다각형으로, 해치는 경계 고리마다 닫힌 꺾은선으로 보내고(채움도 시야를 막음),
+  와이프아웃·이미지 등은 그 타입 그대로 보내 엔진이 '검토 불가'로 멈춘다. 중첩 블록도 펼친다.
+  펼쳐서 형상이 하나도 없거나 펼칠 수 없거나 배열 블록(MINSERT)이면 삽입점만 보내 '검토 불가'(형상을 잃고 통과로 새지 않게).
+- 360° 호(시작각 = 끝각)는 원으로 보낸다.
 의존성: ezdxf (pip install ezdxf) — 엔진 코어는 이 모듈 없이 동작한다.
 """
 from __future__ import annotations
@@ -28,8 +31,8 @@ from ..contract import LAYER_ROLES, SCHEMA_RAW
 _SPLINE_FRAME_CONTROL_POINT = 16  # DXF VERTEX 플래그
 ROLES_XRECORD = "GARC_ROLES"
 # 블록을 펼칠 때 형상이 아닌 하위 객체(주석·채우기)는 뺀다
-_ANNOTATION = {"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "DIMENSION", "LEADER", "MLEADER", "MULTILEADER", "HATCH", "SOLID",
-               "WIPEOUT", "IMAGE", "TOLERANCE", "ARC_DIMENSION", "LARGE_RADIAL_DIMENSION"}
+_ANNOTATION = {"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "DIMENSION", "LEADER", "MLEADER", "MULTILEADER", "TOLERANCE",
+               "ARC_DIMENSION", "LARGE_RADIAL_DIMENSION"}
 CURVE_REL_TOL = 1e-4        # ELLIPSE·SPLINE 꺾은선 근사 허용 이격 = 곡선 크기 × 이 값
 
 
@@ -76,10 +79,30 @@ def _entity(e) -> dict[str, Any]:
         out["closed"] = bool(e.is_closed)
     elif t == "ARC":
         # 반시계(OCS) 호 → 시작·끝 점 + bulge = tan(중심각/4). 법선이 −Z면 WCS에서 방향 반대
-        sweep = (e.dxf.end_angle - e.dxf.start_angle) % 360.0 or 360.0
+        sweep = (e.dxf.end_angle - e.dxf.start_angle) % 360.0
+        if sweep < 1e-9:   # 시작각 = 끝각 → 360° 호 = 원
+            ocs, c, r = e.ocs(), e.dxf.center, float(e.dxf.radius)
+            out["points"] = [_xy(ocs.to_wcs((c[0] + r, c[1], c[2]))), _xy(ocs.to_wcs((c[0] - r, c[1], c[2])))]
+            out["bulges"] = [1.0, 1.0]
+            out["closed"] = True
+            return out
         flip = -1.0 if e.dxf.extrusion[2] < 0 else 1.0
         out["points"] = [_xy(e.start_point), _xy(e.end_point)]
         out["bulges"] = [flip * math.tan(math.radians(sweep) / 4.0), 0.0]
+    elif t in ("SOLID", "TRACE", "3DFACE"):
+        # 4점 채움: 꼭짓점 순서 1·2·4·3이 둘레(3·4가 같으면 삼각형). 3DFACE는 1·2·3·4
+        v = [e.dxf.vtx0, e.dxf.vtx1, e.dxf.vtx2, e.dxf.get("vtx3", e.dxf.vtx2)]
+        if t != "3DFACE":
+            ocs = e.ocs()
+            v = [ocs.to_wcs(p) for p in v]
+            v = [v[0], v[1], v[3], v[2]]
+        pts = []
+        for p in v:
+            if not pts or _xy(p) != pts[-1]:
+                pts.append(_xy(p))
+        out["type"] = "SOLID"
+        out["points"] = pts
+        out["closed"] = True
     elif t == "CIRCLE":
         ocs, c, r = e.ocs(), e.dxf.center, float(e.dxf.radius)
         out["points"] = [_xy(ocs.to_wcs((c[0] + r, c[1], c[2]))), _xy(ocs.to_wcs((c[0] - r, c[1], c[2])))]
@@ -94,28 +117,65 @@ def _entity(e) -> dict[str, Any]:
     return out
 
 
-def _expand(insert, parent_handle: str, counter: list[int]) -> Iterable[dict[str, Any]]:
-    """블록을 펼쳐 형상 하위 객체를 낸다(중첩 블록 포함). 하위 객체 handle = '<블록 handle>.<번호>'."""
+def _hatch_loops(e) -> list[dict[str, Any]]:
+    """해치 → 경계 고리마다 닫힌 꺾은선(호·곡선은 크기의 1/10000 이내로 꺾은선)."""
+    from ezdxf import path as ezpath
+    loops = []
+    try:
+        for p in ezpath.from_hatch(e):
+            box = [_xy(v) for v in p.flattening(1e9)]
+            size = max((math.dist(box[0], q) for q in box), default=1.0) or 1.0
+            pts = [_xy(v) for v in p.flattening(max(size * CURVE_REL_TOL, 1e-9))]
+            if pts:
+                loops.append({"type": "HATCH", "points": pts, "closed": True})
+    except Exception:
+        return []
+    return loops
+
+
+def _entities(e) -> list[dict[str, Any]]:
+    """객체 하나 → raw 객체 목록(해치는 경계 고리 수만큼, 나머지는 하나). handle은 호출자가 붙인다."""
+    if e.dxftype() == "HATCH":
+        return _hatch_loops(e) or [{"type": "HATCH", "points": []}]   # 경계를 못 읽으면 좌표 없음 → 검토 불가
+    ent = _entity(e)
+    ent.pop("handle", None)
+    return [ent]
+
+
+def _insert_fallback(insert, handle: str) -> dict[str, Any]:
+    ent = _entity(insert)
+    ent["handle"] = handle
+    return ent
+
+
+def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> list[dict[str, Any]]:
+    """블록을 펼쳐 형상 하위 객체를 낸다(중첩 블록 포함). 하위 객체 handle = '<블록 handle>.<번호>'.
+    형상이 하나도 없거나·펼칠 수 없거나·배열 블록(MINSERT)이면 삽입점만 → 엔진 '검토 불가'."""
+    if insert.dxf.get("column_count", 1) > 1 or insert.dxf.get("row_count", 1) > 1 or depth > 16:
+        return [_insert_fallback(insert, parent_handle)]
     try:
         subs = list(insert.virtual_entities())
     except Exception:
-        # 펼칠 수 없는 블록(비균일 축척 등) → 삽입점만 보내 엔진이 '검토 불가'로 멈추게 한다
-        ent = _entity(insert)
-        ent["handle"] = parent_handle
-        yield ent
-        return
+        return [_insert_fallback(insert, parent_handle)]
+    out: list[dict[str, Any]] = []
     for sub in subs:
         t = sub.dxftype()
         if t in _ANNOTATION:
             continue
         if t == "INSERT":
-            yield from _expand(sub, parent_handle, counter)
+            inner = _expand(sub, parent_handle, counter, depth + 1)
+            if len(inner) == 1 and inner[0]["handle"] == parent_handle and inner[0]["type"] == "INSERT":
+                return inner                     # 안쪽 블록을 못 펼침 → 전체를 멈춤
+            out.extend(inner)
             continue
-        ent = _entity(sub)
-        ent["handle"] = f"{parent_handle}.{counter[0]}"
-        ent["block"] = parent_handle
-        counter[0] += 1
-        yield ent
+        for ent in _entities(sub):
+            ent["handle"] = f"{parent_handle}.{counter[0]}"
+            ent["block"] = parent_handle
+            counter[0] += 1
+            out.append(ent)
+    if not out:
+        return [_insert_fallback(insert, parent_handle)]
+    return out
 
 
 def read_roles(doc) -> dict[str, str]:
@@ -172,18 +232,20 @@ def read_dxf(path: str | Path, roles: dict[str, str] | None = None) -> dict[str,
             continue
         eff_role = role or LAYER_ROLES.get(layer)
         if e.dxftype() == "INSERT" and eff_role != "eye":   # 레이어 단위 역할에는 조종위치가 없다(엔진 규칙)
-            subs = list(_expand(e, e.dxf.handle, [0]))
-            for sub in subs:
-                sub["layer"] = layer
-                if role is not None:
-                    sub["role"] = role
-            entities.extend(subs)
-            continue
-        ent = _entity(e)
-        ent["layer"] = layer
-        if role is not None:
-            ent["role"] = role
-        entities.append(ent)
+            subs = _expand(e, e.dxf.handle, [0])
+        else:
+            subs = _entities(e)
+            if len(subs) == 1:
+                subs[0]["handle"] = e.dxf.handle
+            else:                                     # 해치 고리 여러 개 → '<해치 handle>.<번호>'
+                for i, sub in enumerate(subs):
+                    sub["handle"] = f"{e.dxf.handle}.{i}"
+                    sub["block"] = e.dxf.handle
+        for sub in subs:
+            sub["layer"] = layer
+            if role is not None:
+                sub["role"] = role
+        entities.extend(subs)
 
     return {
         "schema": SCHEMA_RAW,
