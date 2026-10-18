@@ -45,9 +45,10 @@ namespace GaRuleCheck
         /// 마지막 검사가 엔진 오류로 실패했음(배지 '엔진 응답 없음'용)
         public bool LastFailed { get; private set; }
         private HashSet<string> _lastHandles = new();
+        private HashSet<string> _mappedLayers = new();   // GARC_LAYER_ROLES의 레이어(실도면 연결) — 바뀌면 다시 검사
         private Dictionary<string, string> _tips = new();   // handle → 마우스 툴팁 문구
         private Dictionary<string, List<ElementCheckDto>> _elements = new();
-        private Dictionary<string, (List<double[]> pts, bool closed)> _shapes = new();   // 마지막 스냅샷의 도면 단위 좌표
+        private Dictionary<string, (List<double[]> pts, bool closed, List<double>? bulges)> _shapes = new();   // 마지막 스냅샷의 도면 단위 좌표
         private HitIndex? _hit;
         private readonly Stopwatch _hoverClock = Stopwatch.StartNew();
         private string? _hoverHandle;
@@ -96,11 +97,12 @@ namespace GaRuleCheck
         {
             try
             {
+                if (obj is Xrecord) { MarkDirty(); return; }   // 역할 지정(GARC_ROLES)이 바뀜 — 판단은 엔진
                 if (obj is not Entity ent) return;
                 // 감시 레이어에 있거나, 직전 스냅샷에 있던 객체(= 다른 레이어로 옮겨진 경우)면 다시 검사.
                 // 'GA'로 시작하는 다른 레이어(GA-OBST·전각 ＧＡ＿OBST 같은 비슷한 이름)도 신호로 쓴다 — 판단은 엔진(layer_counts)이 한다.
                 if (Contract.IsWatchedLayer(ent.Layer) || _lastHandles.Contains(ent.Handle.ToString())
-                    || StartsWithGa(ent.Layer))
+                    || StartsWithGa(ent.Layer) || _mappedLayers.Contains(ent.Layer.Trim().ToUpperInvariant()))
                     MarkDirty();
             }
             catch
@@ -130,7 +132,7 @@ namespace GaRuleCheck
                     {
                         _hoverHandle = h;
                         if (h != null && _shapes.TryGetValue(h, out var sh) && Overlay.Enabled)
-                            Overlay.ElementHover(Doc, sh.pts, sh.closed, WorstStatus(h));
+                            Overlay.ElementHover(Doc, sh.pts, sh.closed, WorstStatus(h), sh.bulges);
                         else
                             Overlay.ElementHover(Doc, null, false, "");
                     }
@@ -161,7 +163,7 @@ namespace GaRuleCheck
                 ? list.OrderBy(x => Theme.StatusRank(x.Status)).First().Status
                 : "unknown";
 
-        public (List<double[]> pts, bool closed)? ShapeOf(string handle) =>
+        public (List<double[]> pts, bool closed, List<double>? bulges)? ShapeOf(string handle) =>
             _shapes.TryGetValue(handle, out var s) ? s : null;
 
         /// 미충족 요소 수, 확인 필요 요소 수(로고 배지용)
@@ -207,9 +209,9 @@ namespace GaRuleCheck
                             tips[h] = $"[{r.StatusKo}] {r.TitleKo}\n{r.MessageKo}" + (string.IsNullOrEmpty(r.SuggestionKo) ? "" : "\n제안: " + r.SuggestionKo);
                 }
             }
-            var shapes = new Dictionary<string, (List<double[]> pts, bool closed)>();
+            var shapes = new Dictionary<string, (List<double[]> pts, bool closed, List<double>? bulges)>();
             foreach (var en in raw.Entities)
-                shapes[en.Handle] = (en.Points, en.Closed == true);
+                shapes[en.Handle] = (en.Points, en.Closed == true, en.Bulges);
             _tips = tips;
             _elements = elements;
             _shapes = shapes;
@@ -269,7 +271,9 @@ namespace GaRuleCheck
                 {
                     raw = Extractor.Extract(Doc);
                 }
-                _lastHandles = raw.Entities.Select(x => x.Handle).ToHashSet();
+                // 펼친 블록의 하위 객체는 원래 블록 handle로도 기억한다(블록을 옮기면 다시 검사)
+                _lastHandles = raw.Entities.Select(x => x.Handle).Concat(raw.Entities.Select(x => Extractor.BaseHandle(x.Handle))).ToHashSet();
+                _mappedLayers = Contract.LayerRoleNames(raw.Props);
                 LastRaw = raw;
                 Last = EngineClient.Check(Extractor.DocId(Doc), raw);
                 BuildTips(raw);

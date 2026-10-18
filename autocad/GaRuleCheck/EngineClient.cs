@@ -1,5 +1,6 @@
 // 로컬 엔진 서버(python -m garc serve) 호출. 연결 실패는 예외로 올려 '검토 불가'로 표시한다(초록 금지).
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
@@ -45,7 +46,10 @@ namespace GaRuleCheck
         public static CheckResponse Check(string docId, RawDrawing raw)
         {
             var body = JsonSerializer.Serialize(new CheckRequest { DocId = docId, Raw = raw }, Contract.Json);
-            var text = Post("/v1/check", body, TimeSpan.FromSeconds(3));
+            // 실도면은 장애물 좌표가 수만 점이라 보내고 읽는 데 시간이 더 든다 → 좌표 2만 점마다 1초 더(최대 20초)
+            int pts = 0;
+            foreach (var e in raw.Entities) pts += e.Points.Count;
+            var text = Post("/v1/check", body, TimeSpan.FromSeconds(Math.Min(3 + pts / 20000.0, 20)));
             return JsonSerializer.Deserialize<CheckResponse>(text, Contract.Json)
                    ?? throw new EngineException("엔진 응답을 읽을 수 없습니다.");
         }
@@ -57,6 +61,15 @@ namespace GaRuleCheck
             var text = Post("/v1/compare", body, TimeSpan.FromSeconds(30));
             return JsonSerializer.Deserialize<CompareResponse>(text, Contract.Json)
                    ?? throw new EngineException("비교 응답을 읽을 수 없습니다.");
+        }
+
+        /// 도면 문자(TEXT/MTEXT)에서 주요 치수·축척 후보 — 실도면 연결 마법사용(엔진이 읽고, 사람이 확인).
+        public static ParticularsResponse Particulars(List<TextDto> texts)
+        {
+            var body = JsonSerializer.Serialize(new ParticularsRequest { Texts = texts }, Contract.Json);
+            var text = Post("/v1/particulars", body, TimeSpan.FromSeconds(10));
+            return JsonSerializer.Deserialize<ParticularsResponse>(text, Contract.Json)
+                   ?? throw new EngineException("치수표 응답을 읽을 수 없습니다.");
         }
 
         /// 마지막 검사 결과와 이력으로 만든 HTML 리포트.

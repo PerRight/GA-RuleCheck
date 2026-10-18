@@ -43,6 +43,11 @@ namespace GaRuleCheck
                 Big("검사 시작", "GARC", "▶", Color.FromRgb(59, 130, 220), "팔레트를 열고 이 도면을 감시합니다. GA_ 레이어가 바뀌면 자동 재검사."),
                 Big("지금 검사", "GARCCHECK", "⟳", Color.FromRgb(70, 150, 120), "즉시 다시 검사"),
                 Big("감시 중지", "GARCOFF", "■", Color.FromRgb(120, 128, 140), "자동 검사를 멈추고 표시를 지웁니다.")));
+            tab.Panels.Add(Panel("실도면",
+                Big("실도면 연결", "GARCLINK", "⚓", Color.FromRgb(30, 140, 160),
+                    "GA_ 레이어가 없는 실제 도면을 검사할 수 있게: 치수표 읽기·축척 → 측면도 영역 → AP/FP/기선 → 선체·장애물·충돌격벽 역할 지정 → 첫 검사. 레이어는 바꾸지 않습니다."),
+                Big("역할 지정", "GARCROLE", "≡", Color.FromRgb(90, 140, 170), "고른 객체에 선체·장애물·충돌격벽·구상선수 역할을 붙이거나 해제(레이어는 그대로)"),
+                Big("역할 보기", "GARCROLESHOW", "◫", Color.FromRgb(120, 150, 170), "엔진이 판정에 쓴 객체를 역할별 색으로 잠시 표시(도면은 그대로)")));
             tab.Panels.Add(Panel("입력",
                 Big("선박 정보", "GARCSHIP", "i", Color.FromRgb(95, 110, 200), "LOA·L·AP·FP·흘수 조건 편집"),
                 Big("조종위치", "GARCEYE", "◉", Color.FromRgb(60, 160, 90), "GA_EYE 점(선교 갑판 높이)을 찍습니다."),

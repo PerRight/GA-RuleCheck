@@ -203,7 +203,7 @@ namespace GaRuleCheck
 
         /// 요소 hover 강조: 상태 색(충족 파랑·미충족 빨강·확인 필요 주황)의 굵은 외곽선 + 닫힌 도형은 반투명 채우기.
         /// pts는 도면 단위(추출 스냅샷 좌표). null이면 지우기만.
-        public static void ElementHover(Document doc, IReadOnlyList<double[]>? pts, bool closed, string status)
+        public static void ElementHover(Document doc, IReadOnlyList<double[]>? pts, bool closed, string status, IReadOnlyList<double>? bulges = null)
         {
             ClearList(ElemItems);
             if (pts == null || pts.Count == 0) return;
@@ -216,7 +216,9 @@ namespace GaRuleCheck
                 return;
             }
             var pl = new Polyline();
-            for (int i = 0; i < pts.Count; i++) pl.AddVertexAt(i, new Point2d(pts[i][0], pts[i][1]), 0, 0, 0);
+            // 호(ARC·CIRCLE·폴리선 호)는 bulge로 곡선 그대로 강조
+            for (int i = 0; i < pts.Count; i++)
+                pl.AddVertexAt(i, new Point2d(pts[i][0], pts[i][1]), bulges != null && i < bulges.Count ? bulges[i] : 0, 0, 0);
             pl.Closed = closed;
             pl.ConstantWidth = 4 * upp;
             pl.Color = col;
@@ -230,10 +232,10 @@ namespace GaRuleCheck
                     h.SetDatabaseDefaults(doc.Database);
                     h.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
                     var verts = new Point2dCollection();
-                    var bulges = new DoubleCollection();
-                    foreach (var p in pts) { verts.Add(new Point2d(p[0], p[1])); bulges.Add(0); }
-                    if (pts[0][0] != pts[^1][0] || pts[0][1] != pts[^1][1]) { verts.Add(new Point2d(pts[0][0], pts[0][1])); bulges.Add(0); }
-                    h.AppendLoop(HatchLoopTypes.Default, verts, bulges);
+                    var hb = new DoubleCollection();
+                    foreach (var p in pts) { verts.Add(new Point2d(p[0], p[1])); hb.Add(0); }
+                    if (pts[0][0] != pts[^1][0] || pts[0][1] != pts[^1][1]) { verts.Add(new Point2d(pts[0][0], pts[0][1])); hb.Add(0); }
+                    h.AppendLoop(HatchLoopTypes.Default, verts, hb);
                     h.EvaluateHatch(true);
                     h.Color = col;
                     h.Transparency = new Transparency((byte)70);   // 반투명 채우기
@@ -244,6 +246,47 @@ namespace GaRuleCheck
         }
 
         public static void ClearDiff() => ClearList(DiffItems);
+
+        // ── 실도면 연결: 역할 보기 ─────────────────────────────────────────────
+        private static readonly List<Entity> RoleItems = new();
+        public static bool RolesShown => RoleItems.Count > 0;
+        public static void ClearRoles() => ClearList(RoleItems);
+
+        /// 엔진이 판정에 쓴 객체(요소 판정의 element_id·role)를 역할별 색으로 표시한다. 좌표는 추출 스냅샷(도면 단위).
+        /// 선체 하늘 · 장애물 주황 · 충돌격벽 빨강 · 구상선수 파랑 · 조종위치 초록. 반환: 역할별 개수.
+        public static Dictionary<string, int> ShowRoles(Document doc, RawDrawing raw, CheckResponse resp)
+        {
+            ClearRoles();
+            var counts = new Dictionary<string, int>();
+            var role = new Dictionary<string, string>();
+            foreach (var r in resp.Results)
+                foreach (var e in r.Elements)
+                    role[e.ElementId] = e.Role;
+            double upp = UnitsPerPixel(doc);
+            foreach (var en in raw.Entities)
+            {
+                // 엔진 요소 판정에 나온 역할이 우선(측면도 영역 거르기 반영), 없으면 객체 지정·GA_ 레이어 역할
+                var ro = role.TryGetValue(en.Handle, out var er) ? er
+                       : en.Role ?? (Contract.LayerRoles.TryGetValue(en.Layer, out var lr) ? lr : null);
+                if (ro == null || en.Points.Count == 0) continue;
+                counts[ro] = counts.TryGetValue(ro, out var n) ? n + 1 : 1;
+                short aci = ro switch { "hull" => Cyan, "obstruction" => Orange, "collision_bhd" => Red, "bulb" => 5, "eye" => Green, _ => Gray };
+                var col = AcColor.FromColorIndex(ColorMethod.ByAci, aci);
+                if (en.Points.Count == 1)
+                {
+                    AddTo(RoleItems, new Circle(new Point3d(en.Points[0][0], en.Points[0][1], 0), Vector3d.ZAxis, 8 * upp) { Color = col }, 125);
+                    continue;
+                }
+                var pl = new Polyline();
+                for (int i = 0; i < en.Points.Count; i++)
+                    pl.AddVertexAt(i, new Point2d(en.Points[i][0], en.Points[i][1]), en.Bulges != null && i < en.Bulges.Count ? en.Bulges[i] : 0, 0, 0);
+                pl.Closed = en.Closed == true;
+                pl.ConstantWidth = 2.5 * upp;
+                pl.Color = col;
+                AddTo(RoleItems, pl, 125);
+            }
+            return counts;
+        }
 
         /// 버전 비교 결과를 도면 위에 임시 표시(도면은 그대로): 추가 초록, 삭제 빨강 파선, 변경 이전 노랑 점선·이후 노랑 실선, 번호 표식.
         public static void ShowDiff(Document doc, CompareResponse? d)

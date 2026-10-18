@@ -24,6 +24,8 @@ namespace GaRuleCheck
             ("GARC_Z_BASE", "기선 높이 z [m]", "보통 0"),
             ("GARC_EYE_HEIGHT", "눈높이 [m]", "선교 갑판 위, 기본 1.8"),
             ("GARC_KEEL_LAID", "용골 거치일", "YYYY-MM-DD"),
+            ("GARC_LBP", "LBP 수선간 길이 [m]", "참고값 — AP–FP 간격과 대조해 축척·기준점 실수를 잡는다(실도면)"),
+            ("GARC_SCALE", "도면 축척 1/N", "실도면: mm 시트에 1/1000로 그렸으면 1/1000. GA_ 규약 도면(1:1)은 비워 둔다"),
         };
 
         public static readonly Dictionary<string, short> LayerColors = new()

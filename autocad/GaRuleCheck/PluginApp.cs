@@ -7,6 +7,8 @@
 //   GARCLARGE   라벨 확대(라벨 글자·선 두께·표식 크기 2.5배 — 판정·도면은 그대로)
 //   GARCVERSION 지금 상태를 버전으로 기록(저장할 때도 자동으로 묻는다)   GARCCOMPARE 버전 비교 창
 //   GARCPANEL   떠 있는 로고 패널 열기/닫기(Ctrl+.)                     GARCLOGO   로고 보이기/숨기기
+//   GARCLINK    실도면 연결 마법사(치수표·축척 → 측면도 영역 → AP/FP/기선 → 역할 지정 → 조종위치)   [LinkWizard.cs]
+//   GARCROLE    고른 객체에 역할(선체·장애물·충돌격벽·구상선수·조종위치) 붙이기/해제   GARCROLESHOW 판정에 쓰인 객체 역할별 색 표시
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -54,7 +56,7 @@ namespace GaRuleCheck
         }
     }
 
-    public sealed class Commands
+    public sealed partial class Commands
     {
         private static readonly Dictionary<Document, DocWatcher> Watchers = new();
         private static readonly Dictionary<Document, CompareForm> CompareForms = new();
@@ -157,6 +159,13 @@ namespace GaRuleCheck
             var ed = doc.Editor;
             var res = ed.GetPoint(new PromptPointOptions("\n조종위치(선교 갑판 높이)를 클릭: "));
             if (res.Status != PromptStatus.OK) return;
+            PlaceEye(doc, res.Value.TransformBy(ed.CurrentUserCoordinateSystem));
+        }
+
+        /// GA_EYE 점 하나를 pt(WCS)에 둔다 — 1개면 이동(handle 유지), 없으면 만든다. 실도면 연결 마법사도 쓴다.
+        internal static void PlaceEye(Document doc, Point3d pt)
+        {
+            var ed = doc.Editor;
             DrawingProps.EnsureSetup(doc, props: false);
             var db = doc.Database;
             using (var tr = db.TransactionManager.StartTransaction())
@@ -166,7 +175,6 @@ namespace GaRuleCheck
                 foreach (ObjectId id in ms)
                     if (tr.GetObject(id, OpenMode.ForRead) is DBPoint p && p.Layer.Equals("GA_EYE", StringComparison.OrdinalIgnoreCase))
                         eyes.Add(p);
-                var pt = res.Value.TransformBy(ed.CurrentUserCoordinateSystem);
                 if (eyes.Count == 1)
                 {
                     eyes[0].UpgradeOpen();
@@ -483,6 +491,7 @@ namespace GaRuleCheck
             var panel = new ResultPanel();
             panel.RecheckRequested += () => { var d = Active; if (d != null) { EngineClient.EnsureRunning(); Attach(d).RunCheck(); } };
             panel.StartRequested += () => Send("_GARCSETUP _GARC ");
+            panel.LinkRequested += () => Send("_GARCLINK ");
             panel.ToggleOverlayRequested += () => Send("_GARCTOGGLE ");
             panel.ReportRequested += () => Send("_GARCREPORT ");
             panel.FocusRequested += FocusTargets;
@@ -499,7 +508,7 @@ namespace GaRuleCheck
                 var d = Active;
                 if (d == null || !Overlay.Enabled) return;
                 var shape = Watchers.TryGetValue(d, out var ww) ? ww.ShapeOf(el.ElementId) : null;
-                Overlay.ElementHover(d, on ? shape?.pts : null, shape?.closed ?? false, el.Status);
+                Overlay.ElementHover(d, on ? shape?.pts : null, shape?.closed ?? false, el.Status, shape?.bulges);
             };
             panel.ElementFocusRequested += el => FocusTargets(new List<string> { el.ElementId });
             panel.Ship.PickRequested += what => Send($"_GARCPICK {what} ");

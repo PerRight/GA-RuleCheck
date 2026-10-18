@@ -1,6 +1,8 @@
 // 엔진(Python)과 주고받는 JSON. 필드 이름은 snake_case로 자동 변환된다(JsonNamingPolicy.SnakeCaseLower).
 // 명세: docs/input-contract.md, engine/garc/contract.py
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -20,6 +22,28 @@ namespace GaRuleCheck
 
         public static bool IsWatchedLayer(string layer) => LayerRoles.ContainsKey(layer.Trim().ToUpperInvariant());
 
+        /// 실도면 역할 이름(엔진 contract.py ROLE_ALIASES와 같은 뜻). 마법사·명령에서 쓰는 한글 이름 → 엔진 이름.
+        public static readonly (string Role, string Ko)[] Roles =
+        {
+            ("hull", "선체"), ("obstruction", "장애물"), ("collision_bhd", "충돌격벽"), ("bulb", "구상선수"), ("eye", "조종위치"),
+        };
+
+        public static string RoleKo(string role) => Roles.FirstOrDefault(r => r.Role == role).Ko ?? role;
+
+        /// 도면 특성 GARC_LAYER_ROLES('컨테이너=장애물; …')의 레이어 이름만 — 어떤 객체를 보낼지 고르는 용도.
+        /// 역할 해석·형식 검사는 엔진이 한다.
+        public static HashSet<string> LayerRoleNames(IReadOnlyDictionary<string, string> props)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            var text = props.FirstOrDefault(kv => kv.Key.Trim().Equals("GARC_LAYER_ROLES", StringComparison.OrdinalIgnoreCase)).Value ?? "";
+            foreach (var chunk in text.Replace("\n", ";").Split(';'))
+            {
+                int eq = chunk.LastIndexOf('=');
+                if (eq > 0) set.Add(chunk[..eq].Trim().ToUpperInvariant());
+            }
+            return set;
+        }
+
         public static readonly JsonSerializerOptions Json = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -38,6 +62,10 @@ namespace GaRuleCheck
         public List<double>? Bulges { get; set; }
         /// 닫힌 폴리선 여부 (폴리선이 아니면 null)
         public bool? Closed { get; set; }
+        /// 실도면 역할 지정(레이어 대신 객체에 붙인 역할, 없으면 null → 생략)
+        public string? Role { get; set; }
+        /// 블록을 펼친 하위 객체면 원래 블록(INSERT)의 handle. 이때 Handle은 "<블록>.<번호>"
+        public string? Block { get; set; }
     }
 
     public sealed class RawDrawing
@@ -141,6 +169,74 @@ namespace GaRuleCheck
         public List<string> CachedRules { get; set; } = new();
         public List<TransitionDto> Transitions { get; set; } = new();
         public double? UnitsScale { get; set; }
+        /// 판정에 필요한 입력의 준비 상태(엔진 0.4+). 옛 엔진이면 null
+        public ReadinessDto? Readiness { get; set; }
+    }
+
+    // ── 실도면 연결: 준비 상태·치수표 읽기 ──────────────────────────────────────
+
+    public sealed class ReadinessDto
+    {
+        public int Ready { get; set; }
+        public int Total { get; set; }
+        public bool AllReady { get; set; }
+        public List<ReadinessItemDto> Items { get; set; } = new();
+        public List<string> ProblemsKo { get; set; } = new();
+    }
+
+    public sealed class ReadinessItemDto
+    {
+        public string Key { get; set; } = "";
+        public string NameKo { get; set; } = "";
+        public bool Required { get; set; }
+        public List<string> Rules { get; set; } = new();
+        /// ok / missing / invalid / default / optional
+        public string Status { get; set; } = "";
+        public string? ValueKo { get; set; }
+        public string? HintKo { get; set; }
+        public string? ProblemKo { get; set; }
+    }
+
+    public sealed class TextDto
+    {
+        public string Text { get; set; } = "";
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double H { get; set; }
+    }
+
+    public sealed class ParticularsRequest
+    {
+        public List<TextDto> Texts { get; set; } = new();
+    }
+
+    public sealed class ParticularItemDto
+    {
+        public string NameKo { get; set; } = "";
+        /// found / conflict / missing
+        public string Status { get; set; } = "";
+        /// 숫자(치수·축척 N) 또는 문자(선종)
+        public JsonElement? Value { get; set; }
+
+        public string ValueText => Value is JsonElement v
+            ? v.ValueKind == JsonValueKind.Number ? v.GetDouble().ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+            : v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : ""
+            : "";
+    }
+
+    public sealed class ConditionDto
+    {
+        public string Name { get; set; } = "";
+        public double TAft { get; set; }
+        public double TFwd { get; set; }
+    }
+
+    public sealed class ParticularsResponse
+    {
+        public Dictionary<string, ParticularItemDto> Items { get; set; } = new();
+        public Dictionary<string, string> SuggestedProps { get; set; } = new();
+        public List<ConditionDto> SuggestedConditions { get; set; } = new();
+        public List<string> HumanInputsKo { get; set; } = new();
     }
 
     // ── 버전 비교 (POST /v1/compare) ─────────────────────────────────────────

@@ -16,6 +16,8 @@ namespace GaRuleCheck
     {
         public event Action? RecheckRequested;
         public event Action? StartRequested;
+        /// 실도면 연결 마법사(GARCLINK) 요청 — 준비 상태 카드·시작 화면의 버튼
+        public event Action? LinkRequested;
         public event Action? ToggleOverlayRequested;
         public event Action? ReportRequested;
         public event Action<List<string>>? FocusRequested;
@@ -196,12 +198,16 @@ namespace GaRuleCheck
             var box = new Panel { BackColor = Theme.Card, Padding = new Padding(14), Margin = new Padding(0, 0, 0, 8), Height = 120 };
             var t = Theme.Label("GA 도면 변경을 감지해 관련 규칙만 다시 검사합니다.", Theme.Body);
             t.Location = new Point(14, 14);
-            var s = Theme.Label("1) 선박 정보 탭에서 LOA·L·AP·FP·흘수 입력\n2) GA_ 레이어에 선체·조종위치·장애물·충돌격벽 그리기\n3) 검사 시작", Theme.Small, Theme.Muted);
+            var s = Theme.Label("1) 선박 정보 탭에서 LOA·L·AP·FP·흘수 입력\n2) GA_ 레이어에 선체·조종위치·장애물·충돌격벽 그리기\n3) 검사 시작\n실제 도면(GA_ 레이어 없음, 1/1000 축척 등)은 [실도면 연결]로 레이어를 바꾸지 않고 연결합니다.", Theme.Small, Theme.Muted);
             s.Location = new Point(14, 38);
+            box.Height = 150;
             var b = Theme.FlatButton(showSetup ? "레이어 만들고 시작" : "검사 시작", Theme.Info);
-            b.Location = new Point(14, 86);
+            b.Location = new Point(14, 112);
             b.Click += (_, _) => StartRequested?.Invoke();
-            box.Controls.AddRange(new Control[] { t, s, b });
+            var link = Theme.FlatButton("실도면 연결");
+            link.Location = new Point(b.Right + 8, 112);
+            link.Click += (_, _) => LinkRequested?.Invoke();
+            box.Controls.AddRange(new Control[] { t, s, b, link });
             _cards.Controls.Add(box);
             FitCards();
         }
@@ -234,6 +240,7 @@ namespace GaRuleCheck
             _cards.Controls.Clear();
             var banner = Banner(r);
             if (banner != null) _cards.Controls.Add(banner);
+            if (r.Readiness is { AllReady: false } rd) AddReadiness(rd);
             bool failOnly = UiState.Current.FailOnly;
             foreach (var x in r.Results)
             {
@@ -265,6 +272,32 @@ namespace GaRuleCheck
             _cards.ResumeLayout();
             FitCards();
             if (record) AddHistory(r);
+        }
+
+        /// 준비 상태 카드: 판정에 필요한 입력 중 빠진 것·잘못된 것을 한 번에(엔진 readiness). '모르면 멈춘다'의 이유를 보여 준다.
+        private void AddReadiness(ReadinessDto rd)
+        {
+            var lines = new List<string>();
+            foreach (var it in rd.Items)
+            {
+                if (it.Status is "missing" or "invalid")
+                    lines.Add($"{(it.Status == "missing" ? "✖" : "⚠")} {it.NameKo} — {it.ProblemKo ?? it.HintKo ?? "없음"}");
+                else if (it.Status == "default" && it.Required)
+                    lines.Add($"· {it.NameKo}: {it.ValueKo} — {it.HintKo}");
+            }
+            foreach (var p in rd.ProblemsKo)
+                if (!rd.Items.Any(i => i.ProblemKo == p)) lines.Add("⚠ " + p);
+            var l = new Label
+            {
+                Text = $"준비 상태 {rd.Ready}/{rd.Total} — 판정에 필요한 입력\n" + string.Join("\n", lines),
+                AutoSize = false, Font = Theme.Small, ForeColor = Theme.Text, BackColor = Theme.Card,
+                Padding = new Padding(10, 6, 10, 6), Margin = new Padding(0, 0, 0, 2),
+            };
+            _cards.Controls.Add(l);
+            var b = Theme.FlatButton("실도면 연결(GARCLINK) — 축척·영역·기준점·역할 지정", Theme.Info);
+            b.Margin = new Padding(0, 0, 0, 8);
+            b.Click += (_, _) => LinkRequested?.Invoke();
+            _cards.Controls.Add(b);
         }
 
         private Control? Banner(CheckResponse r)

@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- AutoCAD 자동 로드 번들 정의. install.ps1이 %APPDATA%\Autodesk\ApplicationPlugins\GaRuleCheck.bundle 로 복사한다.
      SeriesMin R26.0 = AutoCAD 2027 (.NET 10). 2025/2026(R25.x)용 net8 빌드와 섞어 쓰지 말 것. -->
-<ApplicationPackage SchemaVersion="1.0" AppVersion="0.4.0" ProductType="Application"
+<ApplicationPackage SchemaVersion="1.0" AppVersion="0.5.0" ProductType="Application"
     Name="GA-RuleCheck" Description="GA 변경 규칙 후보 검토 (홍대도면반, 해커톤 시제품)"
     Author="홍대도면반" ProductCode="{4407E2A1-5A9B-4B16-9E78-8BCA66DA04C5}" UpgradeCodes="{BC4149B4-2FE9-43D7-A2E1-1ADA2E39588A}">
   <CompanyDetails Name="홍대도면반" />
   <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R26.0" />
   <Components>
     <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R26.0" />
-    <ComponentEntry AppName="GaRuleCheck" Version="0.4.0"
+    <ComponentEntry AppName="GaRuleCheck" Version="0.5.0"
         ModuleName="./Contents/Win64/GaRuleCheck.dll"
         AppDescription="GA-RuleCheck AutoCAD plugin" LoadOnAutoCADStartup="True" />
   </Components>
