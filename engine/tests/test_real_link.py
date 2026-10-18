@@ -348,14 +348,21 @@ class NoSilentGeometryLoss(unittest.TestCase):
             blk.add_text("CONTAINER", dxfattribs={"height": 1})
         elif fill == "sliver":
             blk.add_line((0, 0), (1, 0))                                  # 가리지 않는 짧은 선 — 혼자면 '충족'
-        elif fill in ("nested_tilt", "nested_tilt_proxy"):
+        elif fill.startswith("nested_tilt"):
             # 비균일 축척 블록 안에 법선이 기운 중첩 블록 → ezdxf가 중첩 블록을 재귀 없이 평탄화하는 경로
             import ezdxf.entities.factory as factory
             inner = doc.blocks.new("inner")
             inner.add_line((0, 0), (1, 0))
+            attribs = {"extrusion": (1, 0, 1)}
             if fill == "nested_tilt_proxy":
                 inner.add_entity(factory.create_db_entry("ACAD_PROXY_ENTITY", {"layer": "0"}, doc))
-            blk.add_blockref("inner", (0, 0), dxfattribs={"extrusion": (1, 0, 1)})
+            elif fill == "nested_tilt_minsert":
+                attribs.update(column_count=3, column_spacing=5.0)        # 평탄화하면 복사본 하나만 나온다
+            elif fill == "nested_tilt_xref":
+                doc.add_xref_def("outside.dxf", "outside")                # 형상이 다른 파일에 있는 블록
+                inner.add_line((0, 1), (1, 1))                            # 선 2개 → 개수 안전망(정의 2개 = 나온 2개)으로는 못 잡는다
+                blk.add_blockref("outside", (0, 0), dxfattribs={"extrusion": (1, 0, 1)})
+            blk.add_blockref("inner", (0, 0), dxfattribs=attribs)
             obst = msp.add_blockref("box", (100 + ox, 13.5 + oz), dxfattribs={"xscale": 2.0})
         elif fill == "proxy":
             # 그래픽 없는 프록시는 ezdxf가 콜백 없이 건너뛴다 — 선 하나가 함께 있으면 '펼쳐진' 것처럼 보였다
@@ -437,9 +444,10 @@ class NoSilentGeometryLoss(unittest.TestCase):
         """검증(Sonnet) 5차: ezdxf가 중첩 블록을 평탄화하면 안쪽 정의의 프록시가 검사 없이 빠졌다 → 정의를 재귀로 훑는다."""
         raw, rep = self.run_block("nested_tilt")
         self.assertNotIn("INSERT", [e["type"] for e in raw["entities"]])   # 대조군: 펼쳐짐
-        raw, rep = self.run_block("nested_tilt_proxy")
-        self.assertEqual(status(rep)[VIS], "review")
-        self.assertIn("INSERT", [e["type"] for e in raw["entities"]])
+        for fill in ("nested_tilt_proxy", "nested_tilt_minsert", "nested_tilt_xref"):   # 6차: 중첩 배열 블록·외부 참조도
+            raw, rep = self.run_block(fill)
+            self.assertEqual(status(rep)[VIS], "review", fill)
+            self.assertIn("INSERT", [e["type"] for e in raw["entities"]], fill)
 
     def test_unknown_type_at_top_level_is_read(self):
         """모델 공간의 모르는 타입 때문에 DXF 읽기가 죽지 않는다(레이어는 원본 태그에서 읽음)."""

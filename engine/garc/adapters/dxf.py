@@ -158,10 +158,17 @@ def _has_opaque(block, doc, tag_storage, seen: set[str]) -> bool:
     if block.name in seen:
         return False
     seen.add(block.name)
+    try:
+        if block.block.is_xref or block.block.is_xref_overlay:
+            return True              # 외부 참조(오버레이 포함): 형상이 다른 파일에 있다
+    except AttributeError:
+        pass
     for e in block:
         if e.dxftype() in _OPAQUE or isinstance(e, tag_storage):
             return True
         if e.dxftype() == "INSERT":
+            if e.dxf.get("column_count", 1) > 1 or e.dxf.get("row_count", 1) > 1:
+                return True          # 중첩 배열 블록: 평탄화 경로에서 복사본 하나만 나온다
             inner = doc.blocks.get(e.dxf.name) if doc is not None else None
             if inner is None or _has_opaque(inner, doc, tag_storage, seen):
                 return True          # 정의가 없는 중첩 블록도 형상을 알 수 없다
