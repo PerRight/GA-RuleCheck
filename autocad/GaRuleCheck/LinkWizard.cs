@@ -7,7 +7,8 @@
 //   4) 역할 지정 — 레이어를 옮기지 않고 객체에 역할(선체·충돌격벽·장애물·구상선수)을 붙인다(RoleMap, 도면 사전)
 //   5) 조종위치 — GA_EYE 점
 //   그리고 첫 검사 + 준비 상태(엔진 readiness)를 명령줄·팔레트에 보여 준다.
-// 판정·단위 변환은 엔진이 한다. 여기서는 입력을 받고 도면 특성·도면 사전에 기록만 한다(레이어·객체는 바꾸지 않음).
+// 판정·단위 변환은 엔진이 한다. 여기서는 입력을 받고 도면 특성·도면 사전에 기록만 한다.
+// 기존 레이어·객체는 바꾸지 않는다(새로 만드는 것: 조종위치 점과 GA_ 레이어 5개·라벨 문자 스타일, 점 표시 모양 PDMODE).
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -38,7 +39,7 @@ namespace GaRuleCheck
             if (doc == null) return;
             var ed = doc.Editor;
             var db = doc.Database;
-            ed.WriteMessage("\n실도면 연결: 도면의 레이어·객체는 바꾸지 않고 축척·측면도 영역·기준점·역할만 기록합니다." +
+            ed.WriteMessage("\n실도면 연결: 기존 레이어·객체는 바꾸지 않고 축척·측면도 영역·기준점·역할을 기록합니다(조종위치 점·GA_ 레이어만 새로 만듦)." +
                             "\n각 단계는 Enter로 건너뛸 수 있고, Esc로 멈춰도 그때까지 입력한 것은 남습니다. 다시 실행하면 이어서 고칩니다.\n");
             bool engine = EngineClient.EnsureRunning();
             if (!engine) ed.WriteMessage("\n엔진 서버에 연결할 수 없어 도면 문자 읽기·검사를 못 합니다. 'python -m garc serve' 후 다시 실행하세요.\n");
@@ -115,7 +116,7 @@ namespace GaRuleCheck
             ed.WriteMessage($"\n실도면 연결 {how}. ");
             if (w.Last?.Readiness is ReadinessDto r)
             {
-                ed.WriteMessage($"준비 상태 {r.Ready}/{r.Total}{(r.AllReady ? " — 판정에 필요한 입력이 모두 있습니다." : "")}");
+                ed.WriteMessage($"준비 상태 {r.Ready}/{r.Total}{(r.AllReady ? " — 판정에 필요한 입력이 모두 있습니다(규칙별 결과는 팔레트에서 — '검토 불가'면 그 사유를 확인)." : "")}");
                 foreach (var it in r.Items.Where(i => i.Status is "missing" or "invalid" || (i.Required && i.Status == "default")))
                     ed.WriteMessage($"\n  {(it.Status == "default" ? "·" : it.Status == "missing" ? "✖" : "⚠")} {it.NameKo}: " +
                                     $"{it.ProblemKo ?? it.ValueKo ?? "없음"}{(it.HintKo != null ? " — " + it.HintKo : "")}");
@@ -148,7 +149,11 @@ namespace GaRuleCheck
             var fp = ed.GetPoint(fpOpt);
             if (fp.Status == PromptStatus.Cancel) return false;
             if (fp.Status == PromptStatus.OK) write["GARC_X_FP"] = DrawingProps.M(fp.Value.TransformBy(ucs).X * scale);
-            else if (fp.Status == PromptStatus.Keyword && xAp != null && lbp != null) write["GARC_X_FP"] = DrawingProps.M(xAp.Value + lbp.Value);
+            else if (fp.Status == PromptStatus.Keyword && xAp != null && lbp != null)
+            {
+                write["GARC_X_FP"] = DrawingProps.M(xAp.Value + lbp.Value);
+                ed.WriteMessage("\n주의: FP를 AP + LBP로 넣으면 AP–FP 간격 대조(축척·기준점 실수 감지)가 항상 맞으므로, AP 위치를 도면에서 다시 확인하세요.");
+            }
 
             var bl = ed.GetPoint(new PromptPointOptions("\n기선(용골 바닥선) 높이 클릭 (Enter: 건너뛰기): ") { AllowNone = true });
             if (bl.Status == PromptStatus.Cancel) return false;
@@ -184,18 +189,19 @@ namespace GaRuleCheck
         private static bool PickObstructions(Document doc)
         {
             var ed = doc.Editor;
-            var kw = new PromptKeywordOptions("\n장애물(선교 앞 갑판 화물·크레인·마스트 등) 지정 — 조타실 자체(창·지붕 차양)는 넣지 마세요 [Select/Layer/Skip] <Select>: ")
+            var kw = new PromptKeywordOptions("\n장애물(선교 앞 갑판 화물·크레인·마스트 등) 지정 — 조타실 자체(창·지붕 차양)는 넣지 마세요 [Select/Layer/None] <Select>: ")
             {
                 AllowNone = true,
+                AppendKeywordsToMessage = false,
             };
             kw.Keywords.Add("Select");
             kw.Keywords.Add("Layer");
-            kw.Keywords.Add("Skip");
+            kw.Keywords.Add("None");
             kw.Keywords.Default = "Select";
             var k = ed.GetKeywords(kw);
             if (k.Status == PromptStatus.Cancel) return false;
             var choice = k.Status == PromptStatus.OK ? k.StringResult : "Select";
-            if (choice == "Skip") return true;
+            if (choice == "None") return true;
             if (choice == "Select")
                 return SelectRole(doc, "obstruction", "\n장애물 객체 선택 (걸침 창 권장, Enter: 건너뛰기): ");
 

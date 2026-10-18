@@ -2,7 +2,9 @@
 // 단위 변환·검증·호(bulge) 분할은 엔진(contract.py) 한 곳에서만 한다.
 // 실도면 연결(2026-10-18): 역할을 지정한 객체(RoleMap)와 GARC_LAYER_ROLES 레이어의 객체도 보낸다(측면도 영역 거르기는 엔진).
 // 역할이 있는 블록(조종위치 제외)은 펼쳐서 하위 형상을 보낸다(handle '<블록>.<번호>') — DXF 어댑터와 같은 규칙.
-// ARC·CIRCLE은 점 + bulge, ELLIPSE·SPLINE은 촘촘한 꺾은선.
+//   주석(문자·치수·지시선)만 빼고, 솔리드는 다각형, 해치는 경계 고리마다 닫힌 꺾은선, 와이프아웃·이미지는 타입 그대로(엔진 '검토 불가').
+//   펼쳐서 형상이 없거나·펼칠 수 없거나·배열 블록(MINSERT)이면 삽입점만 보내 '검토 불가'(형상을 잃고 통과로 새지 않게).
+// ARC·CIRCLE은 점 + bulge(360° 호는 원), ELLIPSE·SPLINE은 촘촘한 꺾은선.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -10,6 +12,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
 
 namespace GaRuleCheck
 {
@@ -56,77 +59,151 @@ namespace GaRuleCheck
                 raw.LayerCounts[ent.Layer] = raw.LayerCounts.TryGetValue(ent.Layer, out var n) ? n + 1 : 1;
                 var layer = ent.Layer.Trim().ToUpperInvariant();
                 roles.TryGetValue(id, out var role);
-                if (role == null && !Contract.LayerRoles.ContainsKey(layer) && !mappedLayers.Contains(layer)) continue;
-                var effRole = role ?? (Contract.LayerRoles.TryGetValue(layer, out var lr) ? lr : null);
+                bool gaLayer = Contract.LayerRoles.ContainsKey(layer);
+                if (role == null && !gaLayer && !mappedLayers.Contains(layer)) continue;
+                if (role == null && !gaLayer && IsAnnotation(ent)) continue;   // 레이어째 지정한 레이어의 문자·치수는 형상이 아님
+                var effRole = role ?? (gaLayer ? Contract.LayerRoles[layer] : null);
+                var handle = ent.Handle.ToString();
+                List<RawEntity> subs;
                 if (ent is BlockReference br && ent is not Table && effRole != "eye")
                 {
                     int counter = 0;
-                    var handle = br.Handle.ToString();
-                    foreach (var sub in Expand(tr, br, handle, ref counter, 0))
-                    {
-                        sub.Layer = layer;
-                        sub.Role = role;
-                        raw.Entities.Add(sub);
-                    }
-                    continue;
+                    subs = Expand(tr, br, handle, ref counter, 0);
                 }
-                var r = ToRaw(tr, ent, layer);
-                r.Role = role;
-                raw.Entities.Add(r);
+                else
+                {
+                    subs = ToRawList(tr, ent);
+                    if (subs.Count == 1) subs[0].Handle = handle;
+                    else
+                        for (int i = 0; i < subs.Count; i++) { subs[i].Handle = $"{handle}.{i}"; subs[i].Block = handle; }   // 해치 고리 여러 개
+                }
+                foreach (var sub in subs)
+                {
+                    sub.Layer = layer;
+                    sub.Role = role;
+                    raw.Entities.Add(sub);
+                }
             }
             tr.Commit();
             return raw;
         }
 
-        // 블록을 펼칠 때 형상이 아닌 하위 객체(문자·치수·채우기)는 뺀다
+        // 주석(형상 아님) — 블록을 펼칠 때와 레이어째 지정한 레이어에서 뺀다. 채움(해치·솔리드)은 형상이므로 빼지 않는다.
         private static bool IsAnnotation(Entity e) =>
-            e is DBText or MText or AttributeDefinition or Dimension or Leader or MLeader or Hatch or Solid or Wipeout or RasterImage;
+            e is DBText or MText or AttributeDefinition or Dimension or Leader or MLeader or FeatureControlFrame;
+
+        private static RawEntity InsertFallback(BlockReference br, string handle) =>
+            new() { Handle = handle, Type = "INSERT", Points = { new[] { br.Position.X, br.Position.Y } } };
 
         /// 블록 펼치기(중첩 포함). Explode 결과는 도면에 없는 임시 객체라 여기서 Dispose 한다.
-        /// 펼칠 수 없으면(비균일 축척 등) 삽입점만 보내 엔진이 '검토 불가'로 멈추게 한다.
-        private static IEnumerable<RawEntity> Expand(Transaction tr, BlockReference br, string parent, ref int counter, int depth)
+        /// 펼칠 수 없거나(비균일 축척 등) 배열 블록(MINSERT)이거나 형상이 하나도 없으면 삽입점만 보내 엔진이 '검토 불가'로 멈추게 한다.
+        private static List<RawEntity> Expand(Transaction tr, BlockReference br, string parent, ref int counter, int depth)
         {
             var list = new List<RawEntity>();
+            if (br is MInsertBlock || depth > 16) { list.Add(InsertFallback(br, parent)); return list; }
             var parts = new DBObjectCollection();
-            try { br.Explode(parts); }
-            catch
+            try
             {
-                list.Add(new RawEntity { Handle = parent, Type = "INSERT", Points = { new[] { br.Position.X, br.Position.Y } } });
-                return list;
-            }
-            foreach (DBObject o in parts)
-            {
-                using (o)
+                try { br.Explode(parts); }
+                catch { list.Add(InsertFallback(br, parent)); return list; }
+                foreach (DBObject o in parts)
                 {
                     if (o is not Entity e || IsAnnotation(e)) continue;
-                    if (e is BlockReference inner && e is not Table && depth < 16)
+                    if (e is BlockReference inner && e is not Table)
                     {
-                        list.AddRange(Expand(tr, inner, parent, ref counter, depth + 1));
+                        var sub = Expand(tr, inner, parent, ref counter, depth + 1);
+                        if (sub.Count == 1 && sub[0].Type == "INSERT" && sub[0].Handle == parent)
+                        {
+                            list.Clear();
+                            list.Add(InsertFallback(br, parent));   // 안쪽 블록을 못 펼침 → 전체를 멈춤
+                            return list;
+                        }
+                        list.AddRange(sub);
                         continue;
                     }
-                    RawEntity r;
-                    try { r = ToRaw(tr, e, ""); }
-                    catch
+                    foreach (var r in ToRawList(tr, e))
                     {
-                        // 펼친 옛 폴리선(Polyline2d/3d)은 꼭짓점이 도면에 없어 ObjectId로 읽을 수 없다 → 매개변수(정수 = 꼭짓점)로
-                        r = new RawEntity { Type = "POLYLINE" };
-                        if (e is Curve cv)
-                            try
-                            {
-                                for (int i = 0; i <= (int)Math.Floor(cv.EndParam + 1e-9); i++)
-                                {
-                                    var pt = cv.GetPointAtParameter(i);
-                                    r.Points.Add(new[] { pt.X, pt.Y });
-                                }
-                                r.Closed = cv.Closed;
-                            }
-                            catch { r.Points.Clear(); }   // 좌표 없음 → 엔진이 '검토 불가'
+                        r.Handle = $"{parent}.{counter++}";
+                        r.Block = parent;
+                        list.Add(r);
                     }
-                    r.Handle = $"{parent}.{counter++}";
-                    r.Block = parent;
-                    list.Add(r);
                 }
             }
+            finally
+            {
+                foreach (DBObject o in parts) o.Dispose();
+            }
+            if (list.Count == 0) list.Add(InsertFallback(br, parent));
+            return list;
+        }
+
+        /// 객체 하나 → raw 객체 목록(해치는 경계 고리 수만큼, 펼친 옛 폴리선은 선·호 조각, 나머지는 하나). handle은 호출자가 붙인다.
+        private static List<RawEntity> ToRawList(Transaction tr, Entity e)
+        {
+            if (e is Hatch h) return HatchLoops(h);
+            if ((e is Polyline2d || e is Polyline3d) && e.ObjectId.IsNull)
+            {
+                // 펼친 옛 폴리선은 꼭짓점이 도면에 없어 ObjectId로 읽을 수 없다 → 선·호로 다시 펼친다(호를 잃지 않게)
+                var list = new List<RawEntity>();
+                var segs = new DBObjectCollection();
+                try
+                {
+                    e.Explode(segs);
+                    foreach (DBObject o in segs)
+                        if (o is Entity se) list.AddRange(ToRawList(tr, se));
+                }
+                catch { list.Clear(); list.Add(new RawEntity { Type = "POLYLINE" }); }   // 좌표 없음 → 엔진 '검토 불가'
+                finally { foreach (DBObject o in segs) o.Dispose(); }
+                return list;
+            }
+            return new List<RawEntity> { ToRaw(tr, e, "") };
+        }
+
+        /// 해치 → 경계 고리마다 닫힌 꺾은선(폴리선 고리는 bulge 그대로, 곡선 고리는 촘촘히). 좌표는 해치 평면(OCS) → WCS.
+        private static List<RawEntity> HatchLoops(Hatch h)
+        {
+            var list = new List<RawEntity>();
+            try
+            {
+                var toWcs = Matrix3d.PlaneToWorld(h.Normal);
+                double sign = h.Normal.Z < 0 ? -1.0 : 1.0;
+                double[] W(double x, double y)
+                {
+                    var p = new Point3d(x, y, h.Elevation).TransformBy(toWcs);
+                    return new[] { p.X, p.Y };
+                }
+                for (int i = 0; i < h.NumberOfLoops; i++)
+                {
+                    var loop = h.GetLoopAt(i);
+                    var r = new RawEntity { Type = "HATCH", Closed = true };
+                    if (loop.IsPolyline)
+                    {
+                        var bulges = new List<double>();
+                        foreach (BulgeVertex bv in loop.Polyline)
+                        {
+                            r.Points.Add(W(bv.Vertex.X, bv.Vertex.Y));
+                            bulges.Add(sign * bv.Bulge);
+                        }
+                        if (r.Points.Count > 1 && r.Points[0][0] == r.Points[^1][0] && r.Points[0][1] == r.Points[^1][1])
+                        {
+                            r.Points.RemoveAt(r.Points.Count - 1);
+                            bulges.RemoveAt(bulges.Count - 1);
+                        }
+                        if (bulges.Any(b => b != 0.0)) r.Bulges = bulges;
+                    }
+                    else
+                    {
+                        foreach (Curve2d c in loop.Curves)
+                        {
+                            var pts = c is LineSegment2d ls ? new[] { ls.StartPoint, ls.EndPoint } : c.GetSamplePoints(64);
+                            foreach (var p in pts) r.Points.Add(W(p.X, p.Y));
+                        }
+                    }
+                    if (r.Points.Count > 0) list.Add(r);
+                }
+            }
+            catch { list.Clear(); }
+            if (list.Count == 0) list.Add(new RawEntity { Type = "HATCH" });   // 경계를 못 읽음 → 좌표 없음 → 엔진 '검토 불가'
             return list;
         }
 
@@ -219,6 +296,17 @@ namespace GaRuleCheck
                     // 반시계(법선 방향 기준) 호 → 시작·끝 점 + bulge = tan(중심각/4). 법선이 −Z면 WCS에서 방향 반대
                     r.Type = "ARC";
                     double sweep = a.EndAngle - a.StartAngle;
+                    if (Math.Abs(sweep) < 1e-12 || Math.Abs(Math.Abs(sweep) - 2 * Math.PI) < 1e-12)
+                    {
+                        // 시작각 = 끝각 → 360° 호 = 원(호 하나로 보내면 점으로 무너진다)
+                        var q0 = a.GetPointAtParameter(a.StartParam);
+                        var q1 = a.GetPointAtParameter(a.StartParam + Math.PI);
+                        r.Points.Add(new[] { q0.X, q0.Y });
+                        r.Points.Add(new[] { q1.X, q1.Y });
+                        r.Bulges = new List<double> { 1.0, 1.0 };
+                        r.Closed = true;
+                        break;
+                    }
                     if (sweep <= 0) sweep += 2 * Math.PI;
                     double sign = a.Normal.Z < 0 ? -1.0 : 1.0;
                     r.Points.Add(new[] { a.StartPoint.X, a.StartPoint.Y });
@@ -238,16 +326,28 @@ namespace GaRuleCheck
                     r.Closed = true;
                     break;
                 }
+                case Solid so:
+                {
+                    // 4점 채움: 꼭짓점 0·1·3·2가 둘레(2·3이 같으면 삼각형)
+                    r.Type = "SOLID";
+                    foreach (short k in new short[] { 0, 1, 3, 2 })
+                    {
+                        var p = so.GetPointAt(k);
+                        if (r.Points.Count == 0 || r.Points[^1][0] != p.X || r.Points[^1][1] != p.Y) r.Points.Add(new[] { p.X, p.Y });
+                    }
+                    r.Closed = true;
+                    break;
+                }
                 case Ellipse:
                 case Spline:
                 {
-                    // 곡선 → 촘촘한 꺾은선(128구간, 닫힌 곡선은 끝점 생략). 곡선 크기의 1/10000 수준
+                    // 곡선 → 촘촘한 꺾은선(닫힌 곡선은 끝점 생략). 스플라인은 제어점 수에 비례(뾰족한 꼭대기를 놓치지 않게)
                     var cv = (Curve)ent;
                     r.Type = ent is Spline ? "SPLINE" : "ELLIPSE";
                     try
                     {
                         double t0 = cv.StartParam, t1 = cv.EndParam;
-                        const int n = 128;
+                        int n = ent is Spline sp ? Math.Clamp(32 * Math.Max(sp.NumControlPoints, 4), 128, 4096) : 256;
                         for (int i = 0; i <= n; i++)
                         {
                             if (i == n && cv.Closed) break;

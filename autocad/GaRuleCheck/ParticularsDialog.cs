@@ -16,7 +16,7 @@ namespace GaRuleCheck
         private readonly TextBox _conditions;
         private readonly ComboBox? _units;
 
-        /// 확인 후 도면 특성에 쓸 값(빈 값 = 지우지 않고 그대로 둔다 — 호출자가 빈 값은 건너뜀)
+        /// 확인 후 도면 특성에 쓸 값. 빈 칸은 그 특성을 지운다(DrawingProps.Write) — 칸에는 현재 값이 미리 채워져 있으므로 비우지 않으면 그대로
         public Dictionary<string, string> Result { get; } = new();
 
         private static readonly (string Key, string Label, string Cand, string Hint)[] Rows =
