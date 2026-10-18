@@ -109,6 +109,12 @@ namespace GaRuleCheck
                 foreach (DBObject o in parts)
                 {
                     if (o is not Entity e || IsAnnotation(e)) continue;
+                    if (e is ProxyEntity || e is Ole2Frame)
+                    {
+                        list.Clear();
+                        list.Add(InsertFallback(br, parent));       // 형상을 알 수 없는 프록시·OLE → 전체를 멈춤(DXF 어댑터와 같게)
+                        return list;
+                    }
                     if (e is BlockReference inner && e is not Table)
                     {
                         var sub = Expand(tr, inner, parent, ref counter, depth + 1);
