@@ -102,6 +102,11 @@ class ScaleOriginRoles(unittest.TestCase):
         self.assertEqual(status(rep)[VIS], "review")
         self.assertIn("기선", next(r for r in rep.results if r.rule_id == VIS).message_ko)
 
+    def test_leftover_zero_base_with_offset_origin_is_not_pass(self):
+        """GARCSETUP이 넣은 GARC_Z_BASE=0이 남은 채 AP·FP만 찍은 경우도 같다(입력값이어도 선체보다 한참 아래면 멈춤)."""
+        rep = evaluate(raw_to_model(sheet_raw(props={"GARC_Z_BASE": "0"})))
+        self.assertEqual(status(rep)[VIS], "review")
+
     def test_default_base_is_part_of_cache_key(self):
         raw = sheet_raw(oz=0.0)
         s = Session()

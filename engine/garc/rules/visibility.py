@@ -247,11 +247,13 @@ def check_visibility(model: dict[str, Any], r: Rule) -> RuleResult:
     if mid_bottom is not None and ship["z_base"] > mid_bottom + tol_len:
         return r.result("review", f"기선 z={ship['z_base']:g} m(GARC_Z_BASE)가 도면 선체 중앙부 바닥 z={mid_bottom:.2f} m보다 "
                                   f"{tol_len:.1f} m 넘게 높습니다 — 기선 높이 확인.")
-    # 기선을 입력하지 않아 기본값 0을 쓰는데 선체가 통째로 그보다 위에 있으면(원점이 기선이 아닌 실도면),
+    # 기선이 선체 최저점보다 한참 아래면(원점이 기선이 아닌 실도면에서 기선을 안 넣어 기본값 0을 쓰거나 GARCSETUP의 0이 남은 경우),
     # 수선이 배 아래로 내려가 시야가 실제보다 좋게 계산된다 → 통과로 새지 않게 멈춘다.
-    if "z_base" in model.get("defaults", ()) and min(hull_z) > ship["z_base"] + tol_len:
-        return r.result("review", f"기선(GARC_Z_BASE)이 입력되지 않아 z=0을 쓰는데, 도면 선체 최저점이 z={min(hull_z):.2f} m입니다 "
-                                  "— 도면 원점이 기선이 아니면 기선을 도면에서 지정하세요(GARCPICK BASE).")
+    # (선체 윤곽에 바닥·용골 쪽 선이 하나도 없으면 정상 도면도 여기서 멈춘다 — 안전 쪽. 선체에 바닥선을 포함하면 풀린다.)
+    if min(hull_z) > ship["z_base"] + tol_len:
+        why = "입력되지 않아 기본값 0을 씁니다" if "z_base" in model.get("defaults", ()) else f"z={ship['z_base']:g} m입니다"
+        return r.result("review", f"기선(GARC_Z_BASE)이 {why} — 도면 선체 최저점 z={min(hull_z):.2f} m보다 {tol_len:.1f} m 넘게 아래. "
+                                  "도면 원점이 기선이 아니면 기선을 도면에서 지정하고(GARCPICK BASE), 선체 윤곽에 바닥선을 포함하세요.")
     for cond in model["conditions"]:
         top = ship["z_base"] + max(cond["t_aft"], cond["t_fwd"])
         if top > max(hull_z) + EPS:
