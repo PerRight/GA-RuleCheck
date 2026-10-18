@@ -91,6 +91,8 @@ class Rule:
             "conditions": model["conditions"] if self.uses_conditions else None,
             "objects": [o for o in model["objects"] if o["role"] in roles],
             "issues": issues_for(model, self.roles),
+            # 기본값을 쓴 항목(예: 기선 미입력 → 0)은 값이 같아도 판정이 다를 수 있다(기선 대조) → 캐시 키에 넣는다
+            "defaults": sorted(set(model.get("defaults") or ()) & set(self.ship_keys)),
         }
 
     def input_hash(self, model: dict[str, Any]) -> str:

@@ -247,6 +247,11 @@ def check_visibility(model: dict[str, Any], r: Rule) -> RuleResult:
     if mid_bottom is not None and ship["z_base"] > mid_bottom + tol_len:
         return r.result("review", f"기선 z={ship['z_base']:g} m(GARC_Z_BASE)가 도면 선체 중앙부 바닥 z={mid_bottom:.2f} m보다 "
                                   f"{tol_len:.1f} m 넘게 높습니다 — 기선 높이 확인.")
+    # 기선을 입력하지 않아 기본값 0을 쓰는데 선체가 통째로 그보다 위에 있으면(원점이 기선이 아닌 실도면),
+    # 수선이 배 아래로 내려가 시야가 실제보다 좋게 계산된다 → 통과로 새지 않게 멈춘다.
+    if "z_base" in model.get("defaults", ()) and min(hull_z) > ship["z_base"] + tol_len:
+        return r.result("review", f"기선(GARC_Z_BASE)이 입력되지 않아 z=0을 쓰는데, 도면 선체 최저점이 z={min(hull_z):.2f} m입니다 "
+                                  "— 도면 원점이 기선이 아니면 기선을 도면에서 지정하세요(GARCPICK BASE).")
     for cond in model["conditions"]:
         top = ship["z_base"] + max(cond["t_aft"], cond["t_fwd"])
         if top > max(hull_z) + EPS:

@@ -26,7 +26,8 @@ from .engine import Report, all_rules, evaluate, ROLE_KO
 from .session import diff_models
 
 SHIP_KO = {"loa": "LOA", "l_ll": "L(만재흘수선협약)", "x_ap": "AP 위치 x", "x_fp": "FP 위치 x",
-           "z_base": "기선 높이 z", "eye_height": "눈높이", "keel_laid": "용골 거치일", "ship_type": "선종"}
+           "z_base": "기선 높이 z", "eye_height": "눈높이", "keel_laid": "용골 거치일", "ship_type": "선종",
+           "lbp": "LBP"}
 _KIND_ORDER = {"added": 0, "removed": 0, "modified": 0, "ship": 1, "conditions": 2}
 
 

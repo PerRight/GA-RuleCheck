@@ -12,9 +12,17 @@ raw (AutoCAD 플러그인 / DXF 어댑터가 만든다, 도면 단위 그대로)
   "entities": [{"handle": "2A1", "layer": "GA_HULL", "type": "LWPOLYLINE",
                 "points": [[x, y], ...],
                 "bulges": [b0, b1, ...],      # (선택) 꼭짓점 i→i+1 구간의 bulge. 있으면 호를 외접 꺾은선으로 근사
-                "closed": false}],            # (선택) 닫힌 폴리선이면 마지막→처음 구간도 포함
+                "closed": false,              # (선택) 닫힌 폴리선이면 마지막→처음 구간도 포함
+                "role": "hull",               # (선택) 실도면 역할 지정 — 레이어를 옮기지 않고 객체에 역할을 붙인 것(레이어보다 우선)
+                "block": "1F3"}],             # (선택) 블록을 펼친 하위 객체면 원래 블록(INSERT)의 handle. handle은 "1F3.0"처럼
   "layer_counts": {"GA-OBST": 3, "0": 120}   # (선택) 모델 공간 레이어별 객체 수 — GA_ 이름과 비슷한 레이어 감지용
 }
+
+실도면 연결용 도면 특성(선택, 2026-10-18)
+  GARC_SCALE        도면 축척 "1/1000" — 시트에 1/N로 그린 도면. 도면 1단위 = (단위) × N
+  GARC_REGION       측면도 영역 "x0,y0,x1,y1"(도면 단위) — GARC_LAYER_ROLES로 고른 객체는 이 안의 것만
+  GARC_LAYER_ROLES  레이어 단위 역할 "컨테이너=장애물; HULL=선체" — 측면도 영역과 함께만 쓸 수 있다
+  GARC_LBP          수선간 길이 LBP [m] — 참고값. AP–FP 간격과 대조해 축척·기준점 실수를 잡는다
 
 model (엔진 입력, 전부 m)
 {
@@ -45,8 +53,16 @@ LAYER_ROLES: dict[str, str] = {
     "GA_BULB": "bulb",              # 수선 아래 FP 앞으로 돌출한 부분(구상선수) 윤곽
 }
 ROLES = tuple(LAYER_ROLES.values())
+# 역할 이름: 엔진 이름 또는 한글 이름(실도면 연결 마법사·도면 특성 GARC_LAYER_ROLES)
+ROLE_ALIASES: dict[str, str] = {
+    **{r: r for r in ROLES},
+    "선체": "hull", "선체 윤곽": "hull", "조종위치": "eye", "장애물": "obstruction",
+    "충돌격벽": "collision_bhd", "선수격벽": "collision_bhd", "구상선수": "bulb",
+}
 
-SUPPORTED_TYPES = {"LINE", "LWPOLYLINE", "POLYLINE", "POINT", "INSERT"}
+# ARC·CIRCLE은 points + bulges(호)로, ELLIPSE·SPLINE은 추출기가 촘촘히 꺾은선으로 바꿔 보낸다.
+SUPPORTED_TYPES = {"LINE", "LWPOLYLINE", "POLYLINE", "POINT", "INSERT", "ARC", "CIRCLE", "ELLIPSE", "SPLINE"}
+SCALE_MIN, SCALE_MAX = 1, 10_000     # 도면 축척 1/N의 N 범위(오타 감지용)
 
 # $INSUNITS → 1 도면 단위당 m
 INSUNITS_SCALE = {4: 0.001, 5: 0.01, 6: 1.0}
@@ -62,12 +78,13 @@ PROP_KEYS = {
     "GARC_EYE_HEIGHT": ("eye_height", float),  # 선교 갑판 위 눈높이 [m], 기본 1.8
     "GARC_KEEL_LAID": ("keel_laid", str),  # 용골 거치일 YYYY-MM-DD
     "GARC_SHIP_TYPE": ("ship_type", str),
+    "GARC_LBP": ("lbp", float),            # 수선간 길이 LBP [m] — 참고값(AP–FP 간격 대조용). L(ICLL)과 다를 수 있다
 }
 DEFAULT_EYE_HEIGHT = 1.8
 ROUND = 6  # m 단위 소수 6자리(1 µm)로 반올림 — 부동소수점 잡음 제거용, 설계 허용오차 아님
 
 # ship 숫자 필드의 허용 범위. 범위 밖(NaN·무한대 포함)이면 추측하지 않고 'review'로 멈춘다.
-POSITIVE_FIELDS = ("loa", "l_ll")                       # > 0
+POSITIVE_FIELDS = ("loa", "l_ll", "lbp")                # > 0
 FINITE_FIELDS = ("x_ap", "x_fp", "z_base")               # 유한
 NONNEGATIVE_FIELDS = ("eye_height",)                     # ≥ 0
 FIELD_PROP = {field: key for key, (field, _) in PROP_KEYS.items()}
@@ -222,6 +239,80 @@ def _entity_points(ent: dict[str, Any], tol: float | None) -> list[list[float]]:
     return out
 
 
+def parse_scale(text: Any) -> float:
+    """도면 축척 '1/1000'·'1:1000'·'1000' → N(1000). 형식이 아니거나 범위 밖이면 ValueError."""
+    s = str(text).strip().replace(" ", "")
+    m = re.fullmatch(r"(?:1[/:])?(\d+(?:\.\d+)?)", s, re.ASCII)
+    if not m:
+        raise ValueError(f"축척 형식이 아닙니다: {text!r} (예: 1/1000)")
+    n = float(m.group(1))
+    if not (SCALE_MIN <= n <= SCALE_MAX):
+        raise ValueError(f"축척 1/{n:g}는 범위({SCALE_MIN}~{SCALE_MAX}) 밖입니다")
+    return n
+
+
+def parse_region(text: Any) -> tuple[float, float, float, float]:
+    """'x0,y0,x1,y1'(도면 단위) → (xmin, ymin, xmax, ymax). 넓이가 0이면 ValueError."""
+    parts = [p for p in re.split(r"[,\s]+", str(text).strip()) if p]
+    if len(parts) != 4:
+        raise ValueError(f"영역은 숫자 4개(x0,y0,x1,y1)여야 합니다: {text!r}")
+    x0, y0, x1, y1 = (parse_number(p) for p in parts)
+    box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+    if not all(math.isfinite(v) for v in box) or box[2] - box[0] <= 0 or box[3] - box[1] <= 0:
+        raise ValueError(f"영역의 너비·높이가 0입니다: {text!r}")
+    return box
+
+
+def parse_layer_roles(text: Any) -> dict[str, str]:
+    """'컨테이너=장애물; HULL=hull' → {레이어(대문자·앞뒤 공백 제거): 역할}. 모르는 역할이면 ValueError."""
+    out: dict[str, str] = {}
+    for chunk in str(text or "").replace("\n", ";").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise ValueError(f"레이어 역할 형식 오류: '{chunk}' (예: 컨테이너=장애물)")
+        layer, role = (v.strip() for v in chunk.rsplit("=", 1))
+        r = ROLE_ALIASES.get(role.lower())
+        if not layer or r is None:
+            raise ValueError(f"레이어 역할 '{chunk}': 역할은 선체·장애물·조종위치·충돌격벽·구상선수 중 하나")
+        if r == "eye":
+            raise ValueError(f"레이어 역할 '{chunk}': 조종위치는 점 1개라 레이어 단위로 지정할 수 없습니다")
+        out[layer.upper()] = r
+    return out
+
+
+def _segment_hits_box(a: list[float], b: list[float], box: tuple[float, float, float, float]) -> bool:
+    """선분 a–b가 사각형과 만나는지(Liang–Barsky)."""
+    x0, y0, x1, y1 = box
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, a[0] - x0), (dx, x1 - a[0]), (-dy, a[1] - y0), (dy, y1 - a[1])):
+        if p == 0:
+            if q < 0:
+                return False
+        else:
+            t = q / p
+            if p < 0:
+                t0 = max(t0, t)
+            else:
+                t1 = min(t1, t)
+            if t0 > t1:
+                return False
+    return True
+
+
+def _in_region(pts: list[list[float]], box: tuple[float, float, float, float]) -> bool:
+    """점이나 선분이 하나라도 영역 안에 걸치면 포함 — 경계에 걸친 객체를 버리지 않는다(장애물을 덜 보지 않게).
+    영역을 통째로 둘러싸기만 하는 객체(도면 테두리 등)는 넣지 않는다."""
+    if not pts:
+        return True
+    x0, y0, x1, y1 = box
+    if any(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for p in pts):
+        return True
+    return any(_segment_hits_box(p, q, box) for p, q in zip(pts, pts[1:]))
+
+
 def parse_conditions(text: str) -> list[dict[str, Any]]:
     """'만재 출항:8.0/8.0; 밸러스트 도착:6.5/4.0' → [{name, t_aft, t_fwd}] (흘수는 AP/FP 위치, 기선 기준 m)."""
     out = []
@@ -268,6 +359,37 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
         if scale is None:
             issues.append(_issue("UNIT_UNKNOWN",
                                  f"도면 단위($INSUNITS={raw.get('insunits')})를 알 수 없습니다. mm 또는 m로 지정하거나 GARC_UNITS 특성을 넣으세요."))
+    # 1-1) 축척 — 시트에 1/N로 그린 도면(실도면 대부분: mm 시트에 1/1000)
+    scale_n = None
+    if props.get("GARC_SCALE"):
+        try:
+            scale_n = parse_scale(props["GARC_SCALE"])
+        except ValueError as e:
+            issues.append(_issue("UNIT_UNKNOWN", f"GARC_SCALE='{props['GARC_SCALE']}'를 축척으로 읽을 수 없습니다 — {e}"))
+            scale = None
+        else:
+            if scale is not None:
+                scale *= scale_n
+
+    # 1-2) 측면도 영역·레이어 단위 역할(실도면 연결)
+    region = None
+    if props.get("GARC_REGION"):
+        try:
+            region = parse_region(props["GARC_REGION"])
+        except ValueError as e:
+            issues.append(_issue("REGION_INVALID", f"GARC_REGION(측면도 영역)을 읽을 수 없습니다 — {e}"))
+    layer_roles: dict[str, str] = {}
+    if props.get("GARC_LAYER_ROLES"):
+        try:
+            layer_roles = parse_layer_roles(props["GARC_LAYER_ROLES"])
+        except ValueError as e:
+            issues.append(_issue("LAYER_ROLES_INVALID", f"GARC_LAYER_ROLES를 읽을 수 없습니다 — {e}"))
+        else:
+            if region is None and layer_roles:
+                # 한 시트에 측면도·평면도가 같이 있으면 같은 레이어가 여러 뷰에 걸친다 → 영역 없이 레이어째 쓰면 평면도가 섞인다
+                issues.append(_issue("LAYER_ROLES_INVALID", "레이어 단위 역할(GARC_LAYER_ROLES)은 측면도 영역(GARC_REGION)을 지정해야 쓸 수 있습니다.",
+                                     sorted(set(layer_roles.values()))))
+                layer_roles = {}
 
     # 2) 선박 정보
     ship: dict[str, Any] = {"z_base": 0.0, "eye_height": DEFAULT_EYE_HEIGHT}
@@ -304,10 +426,22 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
     # 4) 객체
     objects = []
     total_points = 0
+    bad_roles: set[str] = set()
     for ent in raw.get("entities", []):
         layer = str(ent.get("layer", "")).strip().upper()
-        role = LAYER_ROLES.get(layer)
-        if role is None:
+        source = "layer"
+        if ent.get("role") is not None:                 # 실도면 역할 지정(객체별) — 레이어보다 우선
+            role = ROLE_ALIASES.get(str(ent["role"]).strip().lower())
+            source = "map"
+            if role is None:
+                bad_roles.add(str(ent["role"]))
+                continue
+        elif layer in LAYER_ROLES:
+            role = LAYER_ROLES[layer]
+        elif layer in layer_roles:
+            role = layer_roles[layer]
+            source = "layer_map"
+        else:
             continue  # GA_ 규약 밖 레이어는 무시
         etype = str(ent.get("type", "")).upper()
         if etype not in SUPPORTED_TYPES:
@@ -323,6 +457,8 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
                                       [role]))
             continue
         pts = _entity_points(ent, ARC_TOL_M / scale if scale else None)
+        if source == "layer_map" and region is not None and not _in_region(pts, region):
+            continue  # 측면도 영역 밖(평면도·단면도 등) — 레이어 단위 역할에서만 거른다
         total_points += len(pts)
         if total_points > MAX_MODEL_POINTS:
             raise ContractError(f"GA_ 레이어 좌표가 너무 많습니다(호 분할 후 {MAX_MODEL_POINTS:,}점 초과) — "
@@ -331,12 +467,21 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
             pts_m = []
         else:
             pts_m = [[_r(p[0] * scale), _r(p[1] * scale)] for p in pts]
-        objects.append({"handle": str(ent.get("handle")), "layer": layer, "role": role,
-                        "type": etype, "points": pts_m})
+        obj = {"handle": str(ent.get("handle")), "layer": layer, "role": role, "type": etype, "points": pts_m}
+        if source != "layer":
+            obj["source"] = source
+        if ent.get("block") is not None:
+            obj["block"] = str(ent["block"])
+        objects.append(obj)
+    for r in sorted(bad_roles):
+        issues.append(_issue("ENTITY_ROLE_UNKNOWN", f"객체에 붙은 역할 '{r}'를 알 수 없습니다 — 플러그인과 엔진 버전을 확인하세요."))
 
     model = {
         "schema": SCHEMA_MODEL,
         "units_scale": scale,
+        "scale_n": scale_n,
+        # 입력이 없어 기본값을 쓴 선박 정보(준비 상태 표시·기선 대조용)
+        "defaults": [f for f, key in (("z_base", "GARC_Z_BASE"), ("eye_height", "GARC_EYE_HEIGHT")) if not props.get(key)],
         "source": raw.get("source") or {},
         "ship": ship,
         "conditions": conditions,
@@ -396,6 +541,14 @@ def validate_model(model: dict[str, Any]) -> None:
             _add_issue(issues, _issue("SHIP_VALUE_MISMATCH",
                                       f"GARC_L_LL={l_ll:g} m와 GARC_LOA={loa:g} m가 맞지 않습니다 — L은 LOA보다 길 수 없고, "
                                       f"LOA의 {L_LL_MIN_RATIO:g}배보다 짧으면 자릿수 오타로 봅니다. 두 값을 확인하세요."))
+
+    # AP–FP 간격 = LBP(정의). 크게 다르면 축척·기준점·LBP 중 하나가 틀렸다.
+    if (ship.get("lbp") is not None and ship.get("x_ap") is not None and ship.get("x_fp") is not None
+            and not {"lbp", "x_ap", "x_fp"} & bad_fields):
+        span, lbp = ship["x_fp"] - ship["x_ap"], ship["lbp"]
+        if abs(span - lbp) > max(LENGTH_TOL_RATIO * lbp, LENGTH_TOL_MIN):
+            _add_issue(issues, _issue("SHIP_VALUE_MISMATCH",
+                                      f"AP–FP 간격 {span:.2f} m가 LBP {lbp:g} m(GARC_LBP)와 다릅니다 — 축척(GARC_SCALE)·AP/FP 위치·LBP를 확인하세요."))
 
     if ("x_ap" in ship and "x_fp" in ship and not {"x_ap", "x_fp"} & bad_fields
             and ship["x_ap"] is not None and ship["x_fp"] is not None and ship["x_fp"] <= ship["x_ap"]):

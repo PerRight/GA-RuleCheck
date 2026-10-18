@@ -12,4 +12,4 @@ __all__ = [
     "evaluate", "Report", "RuleResult", "DISCLAIMER_KO",
     "Session", "diff_models",
 ]
-__version__ = "0.3.0"  # 0.2.0: raw bulges/closed, 입력 값·형상 검증 / 0.2.1: 오타 감지(눈 위치·흘수·기선·용골일·숫자 형식·유사 레이어) (2026-10-12) / 0.3.0: 요소별 판정·버전 비교 /v1/compare (2026-10-18)
+__version__ = "0.4.0"  # 0.2.0: raw bulges/closed, 입력 값·형상 검증 / 0.2.1: 오타 감지(눈 위치·흘수·기선·용골일·숫자 형식·유사 레이어) (2026-10-12) / 0.3.0: 요소별 판정·버전 비교 /v1/compare (2026-10-18)
