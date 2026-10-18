@@ -5,6 +5,7 @@
   POST /v1/reset  {"doc_id"}               → 해당 문서 세션 초기화
   POST /v1/report {"doc_id", "title"?}     → {"html": 검토 리포트} (마지막 revision + 이력)
   POST /v1/compare {"a": raw, "b": raw, "labels"?: ["v1","v2"]} → 버전 비교(변경 항목·해결된 위반·형상)
+  POST /v1/particulars {"texts": [{"text", "x", "y", "h"}]} → 주요 치수표·축척 후보(실도면 연결)
 
 127.0.0.1에만 바인딩한다(도면 데이터가 PC 밖으로 나가지 않음).
 추가로 Host 헤더가 루프백 이름이 아니거나 브라우저 Origin 헤더가 붙은 요청은 거부한다
@@ -69,6 +70,16 @@ def handle_compare(body: dict[str, Any]) -> dict[str, Any]:
     return compare_raws(body["a"], body["b"], (str(labels[0]), str(labels[1])))
 
 
+def handle_particulars(body: dict[str, Any]) -> dict[str, Any]:
+    from .particulars import find_particulars
+    texts = body.get("texts")
+    if not isinstance(texts, list):
+        raise ContractError("texts(문자 목록)가 필요합니다.")
+    if len(texts) > 50_000:
+        raise ContractError("문자가 너무 많습니다(5만 개 초과).")
+    return find_particulars(texts)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "garc/" + __version__
 
@@ -115,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"html": build_from_session(sess, body.get("title"))})
             elif self.path == "/v1/compare":
                 self._send(200, handle_compare(body))
+            elif self.path == "/v1/particulars":
+                self._send(200, handle_particulars(body))
             elif self.path == "/v1/reset":
                 with _lock:
                     _sessions.pop(str(body.get("doc_id") or "default"), None)
