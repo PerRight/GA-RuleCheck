@@ -112,6 +112,52 @@ def _version_summary(label: str, model: dict[str, Any], report: Report) -> dict[
     }
 
 
+_KIND_KO = {"added": "추가", "removed": "삭제", "modified": "수정"}
+
+
+def _group_blocks(changes: list[dict[str, Any]], block_of: dict[str, str | None]) -> list[dict[str, Any]]:
+    """펼친 블록의 하위 객체 변경을 블록·종류마다 한 항목으로 묶는다(실도면 크레인 블록 하나를 옮기면 하위 객체 수천 개가 '수정').
+    묶은 항목: element_id = 블록 handle, members = 하위 handle 목록, bbox = 합친 범위, 해결/새 위반/확인 필요는 규칙별 하나로."""
+    out: list[dict[str, Any]] = []
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for c in changes:
+        b = block_of.get(c["element_id"]) if c.get("element_id") else None
+        if not b:
+            out.append(c)
+            continue
+        g = groups.get((b, c["kind"]))
+        if g is None:
+            g = {**c, "element_id": b, "members": [], "resolved": [], "introduced": [], "needs_check": []}
+            groups[(b, c["kind"])] = g
+            out.append(g)
+        g["members"].append(c["element_id"])
+        for key in ("resolved", "introduced", "needs_check"):
+            for x in c[key]:
+                if all(y["rule_id"] != x["rule_id"] for y in g[key]):
+                    g[key].append(x)
+        if c["bbox"]:
+            g["bbox"] = c["bbox"] if not g.get("bbox") else [min(g["bbox"][0], c["bbox"][0]), min(g["bbox"][1], c["bbox"][1]),
+                                                             max(g["bbox"][2], c["bbox"][2]), max(g["bbox"][3], c["bbox"][3])]
+    for (b, kind), g in groups.items():
+        n = len(g["members"])
+        if n == 1:
+            continue
+        bb = g["bbox"]
+        if bb:
+            g["center"] = [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2]
+            span = f"x {bb[0]:.1f}~{bb[2]:.1f} m, 상단 z {bb[3]:.2f} m"
+        else:
+            span = "좌표 없음"
+        g["desc_ko"] = f"{g['role_ko']} 블록 {b} {_KIND_KO.get(kind, kind)} (하위 객체 {n}개)"
+        g["before_ko"] = "없음" if kind == "added" else f"블록 {b} — 변경 범위 {span}"
+        g["after_ko"] = "없음" if kind == "removed" else f"블록 {b} — 변경 범위 {span}"
+    for g in groups.values():
+        if len(g["members"]) == 1:
+            g["element_id"] = g["members"][0]       # 하위 객체 하나만 바뀌었으면 원래 항목 그대로
+            g.pop("members")
+    return out
+
+
 def compare_models(ma: dict[str, Any], mb: dict[str, Any], labels: tuple[str, str] = ("A", "B")) -> dict[str, Any]:
     rules = all_rules()
     ra, rb = evaluate(ma, rules), evaluate(mb, rules)
@@ -249,13 +295,14 @@ def compare_models(ma: dict[str, Any], mb: dict[str, Any], labels: tuple[str, st
                         "resolved": res, "introduced": intro, "needs_check": check, "related_rules": related,
                         "center": None, "bbox": None})
 
+    changes = _group_blocks(changes, {o["handle"]: o.get("block") for o in ma["objects"] + mb["objects"]})
     changes.sort(key=lambda c: (_KIND_ORDER[c["kind"]], c["center"][0] if c["center"] else math.inf,
                                 c["element_id"] or c["desc_ko"]))
     for i, c in enumerate(changes, 1):
         c["number"] = i
 
     # 바뀌지 않은 객체인데 판정이 바뀐 것 (예: 선교를 올려서 앞 장애물이 해결) — 특정 변경 하나에 붙이지 않고 따로 알린다
-    changed = {c["element_id"] for c in changes if c["element_id"]}
+    changed = {h for c in changes for h in (c.get("members") or [c["element_id"]]) if h}
     indirect = []
     lost: dict[tuple[str, str | None], list[str]] = {}   # (규칙, 이후 상태) → 판정 못 하게 된 객체들
     for h in sorted(set(oa) & set(ob) - changed):

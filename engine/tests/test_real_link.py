@@ -177,6 +177,24 @@ class BlockSuggestionText(unittest.TestCase):
         self.assertLess(len(vis.suggestion_ko), 400)
 
 
+class BlockCompare(unittest.TestCase):
+    def test_moved_block_is_one_change(self):
+        """크레인 블록(하위 30개)을 옮기면 변경 30건이 아니라 '블록 … 수정 (하위 객체 30개)' 한 건."""
+        from garc.compare import compare_raws
+
+        def crane(dx):
+            return [{"handle": f"K1.{i}", "block": "K1", "layer": "0", "type": "LINE", "role": "obstruction",
+                     "points": [[560 + dx + i * 0.2, 314.5], [560 + dx + i * 0.2, 318.0]]} for i in range(30)]
+        out = compare_raws(sheet_raw(extra=crane(0)), sheet_raw(extra=crane(5)))
+        self.assertEqual(len(out["changes"]), 1)
+        c = out["changes"][0]
+        self.assertEqual((c["kind"], c["element_id"], len(c["members"])), ("modified", "K1", 30))
+        self.assertIn("하위 객체 30개", c["desc_ko"])
+        self.assertAlmostEqual(c["bbox"][0], 560.0, places=6)          # 모델 좌표 = 도면 좌표(축척 1/1000·mm → 1 m)
+        self.assertAlmostEqual(c["bbox"][2], 565.0 + 29 * 0.2, places=6)
+        self.assertEqual(out["indirect"], [])
+
+
 class LbpCheck(unittest.TestCase):
     def test_lbp_matches_ap_fp(self):
         rep = evaluate(raw_to_model(sheet_raw(props={"GARC_LBP": "132"})))
