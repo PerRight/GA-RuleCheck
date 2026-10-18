@@ -15,6 +15,7 @@
 - **오류 수정 (10-12, 리뷰 후)**: '모르면 멈춘다'가 깨져 초록으로 새던 경로 차단 — 장애물·선체·격벽 레이어의 블록(INSERT), NaN·무한대·0 이하 선박 값, 좌표 없는 객체 → 전부 `review`. 수치 제안은 모든 흘수 조건 기준. 폴리선 호(bulge)를 외접 꺾은선으로(안전 쪽). 엔진 서버 Host·Origin 검사, 플러그인 엔진 주소 루프백 전용, 문서 ID 충돌 수정. Sonnet 1차 검증 지적(LOA 오타 → 적용 제외 초록, 눈높이·L 자릿수 오타, GA_EYE 선, 무한대 제안 순서, 제안값 반올림, 얕은 호) 반영 후 2차 검증. 이어서 2차 지적 F1~F12(조종위치·흘수·기선·용골일·숫자 형식 오타, 유사 레이어 이름 등)를 사용자 PC 연결 폴더에서 고치고 Sonnet 3·4차 검증. 회귀 테스트 `engine/tests/test_robustness.py`. 기록: `docs/review/2026-10-12_오류수정_검증기록.md`.
 - **GitHub 공개 준비 (10-13)**: 공개(Public) 저장소로 준비 → 10-14 업로드(PerRight/GA-RuleCheck). `.gitignore`가 실도면(`*.dwg`, `*.dxf` — 합성 샘플 `samples/S140_*.dxf`만 예외)과 플러그인 검토 리포트(`*_GA검토_*.html`)를 막는다. `.gitattributes`(ps1은 CRLF, DXF는 바이트 그대로), GitHub Actions 엔진 테스트(`.github/workflows/engine-tests.yml`, Python 3.10~3.14 + 24건 표 일치 확인), `CONTRIBUTING.md`(브랜치·커밋·보안 규칙), PR 체크리스트. **라이선스는 미정** — 정하기 전까지 공개돼도 재사용 권한은 없다.
 - **기능 3종 (10-18, 플러그인 v0.4.0 / 엔진 0.3.0)**: ① 버전 기록(저장 시 작성자·사유·관련 규정) + 비교 창(나란히·겹쳐·차이만, 번호 표식, 변경 내역) + 생산팀 전달 PDF/PNG ② 떠 있는 로고 패널(Ctrl+., 배지, 접근성) ③ 마우스 오버 하이라이트·툴팁·점검 항목 연동·'미충족만 보기'. 판정 색 변경: **충족 파랑** · 미충족 빨강 · 확인 필요 주황(버전 비교 추가 초록과 구분). 엔진: 요소별 판정(elements)·`/v1/compare`. 데모 샘플 S140_v1_review → S140_v2_fixed(+ .garc 버전 기록). 테스트 91개. Sonnet 검증 3차까지(비교의 '해결'은 이후 충족·삭제일 때만, 판정 못 함은 '확인 필요') — `docs/review/2026-10-18_기능3종_검증기록.md`. **C# 컴파일 확인**: Claude 작업 환경에서 사용자 PC의 AutoCAD 2027 DLL·.NET 10 WindowsDesktop 참조로 빌드(오류·경고 0, 커밋마다) — 방법은 §6 '실행'. AutoCAD 안 실행은 미확인(확인표 15~25).
+- **실도면 연결 (10-18, 엔진 0.4.0 / 플러그인 0.5.0)**: GA_ 레이어가 없는 실제 GA를 레이어를 바꾸지 않고 검사. 엔진: `GARC_SCALE`(1/N)·`GARC_REGION`(측면도 영역)·객체별 `role`·`GARC_LAYER_ROLES`·`GARC_LBP` 대조·기선 대조(입력값도)·ARC/CIRCLE/ELLIPSE/SPLINE·준비 상태 `readiness`·치수표 읽기 `/v1/particulars`·블록 하위 객체 묶음(제안 문구·버전 비교). DXF 어댑터: 블록 펼침·역할 XRecord. 플러그인: `GARCLINK` 마법사·`GARCROLE`·`GARCROLESHOW`·준비 상태 카드·`RoleMap`(도면 사전 XRecord `GARC_ROLES`). 테스트 118개. 실도면 5건(저장소 밖)에서 치수표·축척 5/5 추출, 탱커 GA는 역할 지정 후 판정까지(장애물 7천여 객체 0.3 초). **쟁점**: 마스트·크레인 지브 같은 좁은 구조물을 22.1.1 장애물로 넣으면 '위반', 빼면 '충족' → `docs/rule-definitions.md`에 '확인 필요'로 기록. 계약 §11.
 - **본선**: 2026-11-09(월) 양재 엘타워 — 본선에서 실제 동작 시연.
 
 ## 1. 팀 (계획서 기준)
@@ -38,6 +39,7 @@ AutoCAD 2027 ─ autocad/GaRuleCheck (C#, 어댑터: 판단 안 함)
   ResultPanel: 팔레트 (규칙 카드·게이지·점검 항목, 선박 정보 탭, 이력 탭, 면책 문구)  ← Theme.cs·RuleCard·ShipInfoView
   FloatingUi : 떠 있는 로고 + 펼침 패널(같은 ResultPanel), Ctrl+.  / UiState: ui.json
   VersionStore·VersionDialog: 저장 시 버전 기록(<도면>.garc\)  CompareForm·CompareCanvas·ExportSheet: 비교 창·내보내기
+  LinkWizard(GARCLINK·GARCROLE·GARCROLESHOW)·ParticularsDialog·RoleMap: 실도면 연결(축척·영역·기준점·역할, 레이어 안 바꿈)
   Ribbon     : 리본 'GA RuleCheck' 탭 / DrawingProps: GARC_* 특성·레이어·라벨 스타일
         │ POST http://127.0.0.1:8765/v1/check {doc_id, raw}   /v1/compare {a, b}
         ▼
@@ -46,6 +48,7 @@ engine/garc (Python 표준 라이브러리만)          DXF 경로: adapters/dxf
   rules/   : visibility (SOLAS V/22.1.1), collision_bulkhead (SOLAS II-1/12)
   engine   : 상태 pass/fail/na/review/skip, overall, 요소별 판정(elements: pass/fail/unknown)
   compare  : 두 스냅샷 → 변경 항목·해결/새 위반·표식 위치 (/v1/compare)
+  readiness: 판정에 필요한 입력의 준비 상태(/v1/check 응답)   particulars: 치수표·축척 후보(/v1/particulars)
   session  : revision diff, 영향 규칙, 입력 해시 캐시(Undo = 캐시 적중)
   server   : 127.0.0.1 전용 HTTP (/v1/check, /v1/compare, /v1/report, /v1/reset)
   report   : HTML 검토 리포트(측면도 SVG·판정식·중간값·이력)
@@ -140,10 +143,12 @@ python scripts/make_samples.py --compare-demo   # 버전 비교 데모 샘플 �
 ## 8. 미결 사항
 - [ ] C# 플러그인 v0.4.0 다시 빌드(`install.ps1`) + 첫 실행 확인표 1~25 (손종민) — 15~25가 10-18 기능 3종
 - [ ] 로고 그림 `garc_logo.png`(정사각형, DLL 옆) — 없으면 코드로 그린 'GA' 표식 (서용언)
-- [ ] 실도면 축척(1/N) 입력·측면도 영역 지정 — 실도면 5건 분석 결과(사용자 폴더 `실도면_분석/`): 모두 mm 단위에 1/1000로 그려 지금은 '검토 불가' (손종민)
+- [x] 실도면 축척(1/N) 입력·측면도 영역 지정 — 10-18 `GARCLINK`(엔진 0.4.0·플러그인 0.5.0). AutoCAD 안 실행은 확인표 26~33 (손종민)
+- [ ] **마스트·크레인 지브 같은 좁은 구조물을 V/22.1.1 장애물로 볼지**(아니면 V/22.1.2 사각 섹터로 따로) — 선급·MSC/Circ.982·현업 관행 확인. 실도면 시험에서 판정이 갈림 (표인범)
+- [ ] 실도면 역할 지정 보조(선체 외곽선·충돌격벽 후보 자동 제시) — 지금은 사람이 고름. AI 사용 시 실행 위치(로컬만) 결정 후 (손종민·표인범)
 - [x] GitHub 공개 저장소 업로드 (PerRight/GA-RuleCheck) — Actions 결과 확인, README 배지는 남음 (전원)
 - [ ] 라이선스 결정 (공개 저장소 — 정하기 전까지 '열람만 가능'. 대회 규정의 지식재산 조항과 함께 확인) (표인범)
-- [ ] 블록(INSERT) 장애물 지원: 지금은 GA_EYE 외 레이어의 블록을 '검토 불가'로 멈춤. 블록 정의 형상을 펼쳐 points로 보내는 기능 (손종민)
+- [x] 블록(INSERT) 장애물 지원 — 10-18 추출기(C#·DXF)가 펼쳐서 보냄(handle '<블록>.<번호>'). 펼칠 수 없는 블록만 '검토 불가'
 - [ ] 3주차 생성형 AI 설명: `server/explain.py`는 외부 API로 데이터를 보냄 → '도면 내용 외부 전송 금지'와 충돌. 보낼 범위(판정 문구만/수치 포함)·옵트인·오프라인 폴백을 먼저 결정 (전원)
 - [ ] 오타 감지의 한계 인지: 범위 안 오타(조종위치 x 18→118, 선미 흘수 등)는 못 잡음 — 발표에서 "모든 입력 실수를 막는다"고 말하지 않기. `GA_OBSTRUCTION`처럼 GA_ 이름으로 시작하는 보조 레이어는 '검토 불가'로 멈추므로 보조선은 `GA_REF` 같은 다른 이름을 쓸 것 (전원)
 - [ ] 24건 수기 검산, `verified_by` 기입 (복준용)
