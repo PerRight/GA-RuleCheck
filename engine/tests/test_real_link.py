@@ -400,6 +400,22 @@ class LayerRoleSafety(unittest.TestCase):
         self.assertEqual(status(evaluate(m))[VIS], "review")
         self.assertEqual(next(i for i in readiness(m)["items"] if i["key"] == "obstruction")["status"], "invalid")
 
+    def test_mapped_layer_without_geometry_stops(self):
+        """라벨 문자를 클릭해 문자뿐인 레이어를 장애물로 매핑했거나 레이어 이름이 틀리면, 장애물이 없는 채 통과하지 않게."""
+        label = {"handle": "T1", "layer": "라벨", "type": "MTEXT", "points": [[606, 318]]}
+        for roles in ("라벨=장애물", "없는레이어=장애물"):
+            m = raw_to_model(sheet_raw(extra=[label], props={"GARC_LAYER_ROLES": roles, "GARC_REGION": "490,290,650,340"}))
+            self.assertEqual(status(evaluate(m))[VIS], "review", roles)
+
+    def test_unsupported_outside_region_is_ignored(self):
+        """영역 밖(평면도)에 있는 매핑 레이어의 지원 안 되는 객체 때문에 멈추지 않는다(영역 판정이 먼저)."""
+        box = {"handle": "C1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
+               "points": [[x + 500, z + 300] for x, z in CONTAINER]}
+        far = {"handle": "W1", "layer": "컨테이너", "type": "WIPEOUT", "points": [[600, 100], [610, 100], [610, 110]]}
+        rep = evaluate(raw_to_model(sheet_raw(extra=[box, far], props={"GARC_LAYER_ROLES": "컨테이너=장애물",
+                                                                        "GARC_REGION": "490,290,650,340"})))
+        self.assertEqual(status(rep)[VIS], "fail")
+
     def test_text_on_mapped_layer_is_ignored(self):
         box = {"handle": "C1", "layer": "컨테이너", "type": "LWPOLYLINE", "closed": True,
                "points": [[x + 500, z + 300] for x, z in CONTAINER]}

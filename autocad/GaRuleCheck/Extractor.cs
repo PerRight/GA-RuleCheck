@@ -195,7 +195,8 @@ namespace GaRuleCheck
                     {
                         foreach (Curve2d c in loop.Curves)
                         {
-                            var pts = c is LineSegment2d ls ? new[] { ls.StartPoint, ls.EndPoint } : c.GetSamplePoints(64);
+                            // 곡선은 256점(제어점 많은 스플라인 고리도 거칠지 않게)
+                            var pts = c is LineSegment2d ls ? new[] { ls.StartPoint, ls.EndPoint } : c.GetSamplePoints(256);
                             foreach (var p in pts) r.Points.Add(W(p.X, p.Y));
                         }
                     }

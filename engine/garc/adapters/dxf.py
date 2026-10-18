@@ -153,9 +153,13 @@ def _expand(insert, parent_handle: str, counter: list[int], depth: int = 0) -> l
     형상이 하나도 없거나·펼칠 수 없거나·배열 블록(MINSERT)이면 삽입점만 → 엔진 '검토 불가'."""
     if insert.dxf.get("column_count", 1) > 1 or insert.dxf.get("row_count", 1) > 1 or depth > 16:
         return [_insert_fallback(insert, parent_handle)]
+    skipped: list[str] = []
     try:
-        subs = list(insert.virtual_entities())
+        # 프록시·OLE처럼 ezdxf가 펼치지 못하는 하위 객체는 조용히 빠진다 → 알려 주는 콜백으로 잡아 전체를 멈춘다
+        subs = list(insert.virtual_entities(skipped_entity_callback=lambda ent, reason: skipped.append(ent.dxftype())))
     except Exception:
+        return [_insert_fallback(insert, parent_handle)]
+    if any(t not in _ANNOTATION for t in skipped):
         return [_insert_fallback(insert, parent_handle)]
     out: list[dict[str, Any]] = []
     for sub in subs:

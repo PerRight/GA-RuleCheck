@@ -446,7 +446,8 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
     objects = []
     total_points = 0
     bad_roles: set[str] = set()
-    layer_role_counts: dict[str, dict[str, Any]] = {}   # 레이어 단위 역할: 영역 안·밖 객체 수
+    # 레이어 단위 역할: 영역 안·밖 형상 객체 수. 매핑한 레이어는 모두 먼저 올려 두어, 형상이 하나도 없는 레이어(주석뿐·이름 틀림)도 잡는다
+    layer_role_counts: dict[str, dict[str, Any]] = {ln: {"role": r, "in": 0, "out": 0} for ln, r in layer_roles.items()}
     for ent in raw.get("entities", []):
         layer = str(ent.get("layer", "")).strip().upper()
         source = "layer"
@@ -466,6 +467,15 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
         etype = str(ent.get("type", "")).upper()
         if source == "layer_map" and etype in ANNOTATION_TYPES:
             continue  # 레이어째 지정한 경우 그 레이어의 문자·치수는 형상이 아니므로 뺀다
+        if source == "layer_map" and region is not None and (etype not in SUPPORTED_TYPES or etype == "INSERT"):
+            # 영역 밖(평면도 등)의 지원 안 되는 객체·못 펼친 블록 때문에 멈추지 않게 — 영역 판정을 먼저(좌표가 없으면 안쪽으로 봄)
+            try:
+                raw_pts = [[float(p[0]), float(p[1])] for p in (ent.get("points") or [])]
+            except (TypeError, ValueError, IndexError):
+                raw_pts = []
+            if raw_pts and not _in_region(raw_pts, region):
+                layer_role_counts[layer]["out"] += 1
+                continue
         if etype not in SUPPORTED_TYPES:
             _add_issue(issues, _issue("ENTITY_UNSUPPORTED",
                                       f"{layer} 레이어의 {etype} 객체(handle {ent.get('handle')})는 지원하지 않습니다. 선/폴리선/점으로 바꾸세요.",
@@ -506,11 +516,11 @@ def raw_to_model(raw: dict[str, Any]) -> dict[str, Any]:
     for r in sorted(bad_roles):
         issues.append(_issue("ENTITY_ROLE_UNKNOWN", f"객체에 붙은 역할 '{r}'를 알 수 없습니다 — 플러그인과 엔진 버전을 확인하세요."))
     for lname, cnt in sorted(layer_role_counts.items()):
-        if cnt["in"] == 0 and cnt["out"] > 0:
-            # 영역을 잘못 잡으면(예: m 값으로 입력) 그 레이어 객체가 전부 빠져 장애물이 없는 것처럼 보인다 → 멈춘다
-            issues.append(_issue("LAYER_ROLES_EMPTY",
-                                 f"레이어 '{lname}'의 객체 {cnt['out']}개가 모두 측면도 영역(GARC_REGION, 도면 단위) 밖입니다 — 영역을 다시 지정하세요.",
-                                 [cnt["role"]]))
+        if cnt["in"] == 0 and region is not None:
+            # 영역을 잘못 잡았거나(예: m 값으로 입력) 레이어에 형상이 없으면(주석뿐·이름 틀림) 장애물이 없는 것처럼 보인다 → 멈춘다
+            why = (f"객체 {cnt['out']}개가 모두 측면도 영역(GARC_REGION, 도면 단위) 밖입니다 — 영역을 다시 지정하세요"
+                   if cnt["out"] else "형상 객체가 없습니다(문자·치수뿐이거나 레이어 이름이 다름) — 레이어를 다시 고르세요")
+            issues.append(_issue("LAYER_ROLES_EMPTY", f"레이어 '{lname}'의 {why}.", [cnt["role"]]))
 
     model = {
         "schema": SCHEMA_MODEL,
